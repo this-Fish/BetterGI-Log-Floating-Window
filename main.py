@@ -1,14 +1,14 @@
-# 1.3.3
+# 1.3.4
 __author__ = "蜜柑魚"
 
 import ctypes
 import tkinter as tk
+import tkinter.font as tkfont
 import re
 import time
 import os
 import sys
 import logging
-import tkinter.font as tkfont
 from datetime import datetime 
 from pathlib import Path
 from collections import deque
@@ -20,6 +20,9 @@ try:
 except ImportError:
     KEYBOARD_AVAILABLE = False
     logging.warning("keyboard 库未安装，全局快捷键不可用")
+    # 创建虚拟的 KeyboardEvent 类以避免 NameError
+    class KeyboardEvent:
+        pass
 
 def get_base_path():
     """获取程序运行的基础路径"""
@@ -380,6 +383,9 @@ class GlobalShortcutManager:
         self.event_queue = queue.Queue()
         self.listening = False
         self.thread = None
+        self.hotkeys_registered = False
+        self.last_health_check = time.time()
+        self.health_check_interval = 30  # 每30秒检查一次健康状态
         
     def start_listening(self):
         """启动全局快捷键监听"""
@@ -388,87 +394,235 @@ class GlobalShortcutManager:
             return
             
         try:
+            # 确保先清理可能的热键
+            self._safe_unhook_all()
+            
             self.listening = True
             self.thread = threading.Thread(target=self._listen_loop, daemon=True)
             self.thread.start()
             
             # 在主线程中处理事件
             self.root.after(100, self._process_events)
+            # 新增健康检查定时器
+            self.root.after(30000, self._health_check)  # 30秒后开始健康检查
             logging.info("全局快捷键监听已启动")
         except Exception as e:
             logging.error(f"启动全局快捷键监听失败: {str(e)}")
-    
-    def _listen_loop(self):
-        """后台监听循环"""
+            
+    def _health_check(self):
+        """健康检查 - 定期检查快捷键是否正常工作"""
+        if not self.listening:
+            return
+            
         try:
-            # 注册全局快捷键
-            keyboard.add_hotkey('alt+p', lambda: self._queue_event('close'))
-            keyboard.add_hotkey('alt+u', lambda: self._queue_event('reset_position')) 
-            keyboard.add_hotkey('alt+i', lambda: self._queue_event('toggle_transparent'))
-            keyboard.add_hotkey('alt+n', lambda: self._queue_event('toggle_click_through'))
-            keyboard.add_hotkey('alt+k', lambda: self._queue_event('toggle_second_style'))
+            current_time = time.time()
+            # 每30秒检查一次
+            if current_time - self.last_health_check >= self.health_check_interval:
+                if not self.hotkeys_registered:
+                    logging.warning("健康检查: 热键未注册，尝试重新注册")
+                    self._safe_register_hotkeys()
+                else:
+                    logging.debug("健康检查: 快捷键状态正常")
+                
+                self.last_health_check = current_time
             
-            logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式)")
-            
-            # 保持线程运行
-            while self.listening:
-                time.sleep(0.1)
+            # 继续健康检查
+            if self.listening:
+                self.root.after(30000, self._health_check)
                 
         except Exception as e:
-            logging.error(f"全局快捷键监听异常: {str(e)}")
-
-
+            logging.error(f"健康检查失败: {str(e)}")
+            if self.listening:
+                self.root.after(30000, self._health_check)
+    
+    def _safe_unhook_all(self):
+        """安全地清理所有热键"""
+        if not KEYBOARD_AVAILABLE:
+            return
+        try:
+            keyboard.unhook_all()
+            self.hotkeys_registered = False
+            time.sleep(0.1)  # 短暂延迟确保清理完成
+        except Exception as e:
+            logging.warning(f"清理热键时出现警告: {str(e)}")
+            
+    def _safe_register_hotkeys(self):
+        """安全注册热键 - 增强错误处理"""
+        if not KEYBOARD_AVAILABLE:
+            return False
+            
+        try:
+            # 先清理可能冲突的热键
+            self._safe_unhook_all()
+            
+            # 短暂延迟确保系统稳定
+            time.sleep(0.2)
+            
+            # 注册全局快捷键 - 使用更简单的lambda函数
+            keyboard.add_hotkey('alt+p', self._create_event_callback('close'), suppress=True)
+            keyboard.add_hotkey('alt+u', self._create_event_callback('reset_position'), suppress=True)
+            keyboard.add_hotkey('alt+i', self._create_event_callback('toggle_transparent'), suppress=True)
+            keyboard.add_hotkey('alt+n', self._create_event_callback('toggle_click_through'), suppress=True)
+            keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
+            
+            self.hotkeys_registered = True
+            logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式)")
+            return True
+            
+        except Exception as e:
+            logging.error(f"注册全局快捷键失败: {str(e)}")
+            self.hotkeys_registered = False
+            return False
+    
+    def _create_event_callback(self, event_type):
+        """创建事件回调函数 - 避免lambda函数的内存问题"""
+        def callback():
+            self._queue_event(event_type)
+        return callback
+    
+    def _listen_loop(self):
+        """后台监听循环 - 增强稳定性"""
+        retry_count = 0
+        max_retries = 5  # 增加最大重试次数
+        base_retry_delay = 2
+        last_success_time = time.time()
+        
+        while self.listening and retry_count < max_retries:
+            try:
+                # 注册热键
+                success = self._safe_register_hotkeys()
+                
+                if not success:
+                    logging.error(f"无法注册热键，重试 {retry_count + 1}/{max_retries}")
+                    retry_count += 1
+                    # 指数退避策略
+                    delay = base_retry_delay * (2 ** (retry_count - 1))
+                    time.sleep(min(delay, 30))  # 最大延迟30秒
+                    continue
+                
+                # 重置重试计数和计时
+                retry_count = 0
+                last_success_time = time.time()
+                
+                # 保持线程运行，定期检查状态
+                while self.listening:
+                    # 检查热键是否仍然有效
+                    if not self.hotkeys_registered:
+                        logging.warning("热键可能已失效，尝试重新注册")
+                        break
+                    
+                    # 检查是否长时间没有成功事件（可能表示热键失效）
+                    if time.time() - last_success_time > 120:  # 2分钟没有成功事件
+                        logging.warning("长时间没有检测到快捷键事件，可能已失效")
+                        break
+                        
+                    time.sleep(1)  # 减少CPU使用
+                    
+            except Exception as e:
+                logging.error(f"全局快捷键监听循环异常: {str(e)}")
+                retry_count += 1
+                delay = base_retry_delay * (2 ** (retry_count - 1))
+                time.sleep(min(delay, 30))
+        
+        if retry_count >= max_retries:
+            logging.error("全局快捷键监听达到最大重试次数，已停止")
+            # 尝试最后一次恢复
+            self._attempt_recovery()
+        else:
+            logging.info("全局快捷键监听正常退出")
+            
+    def _attempt_recovery(self):
+        """尝试恢复快捷键功能"""
+        logging.info("尝试恢复快捷键功能...")
+        try:
+            self._safe_unhook_all()
+            time.sleep(1)
+            success = self._safe_register_hotkeys()
+            if success:
+                logging.info("快捷键功能恢复成功")
+                # 重置重试计数
+                self.listening = True
+                # 重新启动监听线程
+                self.thread = threading.Thread(target=self._listen_loop, daemon=True)
+                self.thread.start()
+            else:
+                logging.error("快捷键功能恢复失败")
+        except Exception as e:
+            logging.error(f"恢复快捷键功能时发生错误: {str(e)}")
     
     def _queue_event(self, event_type):
-        """将事件放入队列"""
+        """将事件放入队列 - 增强版本"""
         try:
-            self.event_queue.put(event_type)
+            current_time = time.time()
+            # 限制事件频率 - 防止过快连续触发
+            if hasattr(self, '_last_event_time'):
+                time_since_last = current_time - self._last_event_time
+                if time_since_last < 0.1:  # 最少100毫秒间隔
+                    return
+            
+            self._last_event_time = current_time
+            
+            if self.event_queue.qsize() < 20:  # 增加队列容量
+                self.event_queue.put(event_type)
+                logging.debug(f"事件已加入队列: {event_type}")
+            else:
+                logging.warning("事件队列已满，丢弃事件")
         except Exception as e:
             logging.error(f"事件队列操作失败: {str(e)}")
     
     def _process_events(self):
-        """在主线程中处理快捷键事件"""
+        """在主线程中处理快捷键事件 - 增强错误处理"""
         try:
-            while True:
-                event = self.event_queue.get_nowait()
-                self._handle_event(event)
-        except queue.Empty:
-            pass
+            processed_count = 0
+            max_events_per_cycle = 10  # 增加每次处理的事件数量
+            
+            while processed_count < max_events_per_cycle:
+                try:
+                    event = self.event_queue.get_nowait()
+                    self._handle_event(event)
+                    processed_count += 1
+                except queue.Empty:
+                    break
+                    
+        except Exception as e:
+            logging.error(f"处理事件队列时发生错误: {str(e)}")
+            # 不退出，继续处理
         
         # 继续检查事件
         if self.listening:
             self.root.after(50, self._process_events)
     
     def _handle_event(self, event):
-        """处理具体的事件"""
+        """处理具体的事件 - 增强错误处理"""
         try:
+            logging.info(f"处理快捷键事件: {event}")
+            
+            # 检查主窗口是否仍然有效
+            if not self.root or not hasattr(self.root, 'winfo_exists') or not self.root.winfo_exists():
+                logging.warning("主窗口已销毁，停止处理事件")
+                self.stop_listening()
+                return
+            
             if event == 'close':
-                logging.info("全局快捷键: 接收到关闭指令")
                 self.root._on_close_shortcut()
             elif event == 'reset_position':
-                logging.info("全局快捷键: 接收到重置位置指令") 
                 self.root._on_reset_position_shortcut()
             elif event == 'toggle_transparent':
-                logging.info("全局快捷键: 接收到切换透明模式指令")
                 self.root._on_transparent_toggle_shortcut()
             elif event == 'toggle_click_through':
-                logging.info("全局快捷键: 接收到切换不可选中模式指令")
                 self.root._on_click_through_toggle_shortcut()
             elif event == 'toggle_second_style':
-                logging.info("全局快捷键: 接收到切换第二样式指令")
                 self.root._on_second_style_toggle_shortcut()
+                
         except Exception as e:
             logging.error(f"处理快捷键事件失败: {str(e)}")
+            # 不重新抛出异常，防止事件处理循环中断
     
     def stop_listening(self):
-        """停止监听"""
+        """停止监听 - 增强版本"""
         self.listening = False
-        if KEYBOARD_AVAILABLE:
-            try:
-                keyboard.unhook_all()
-                logging.info("全局快捷键监听已停止")
-            except Exception as e:
-                logging.error(f"停止全局快捷键监听失败: {str(e)}")
+        self._safe_unhook_all()
+        logging.info("全局快捷键监听已停止")
 
 class SmartLogReader:
     def __init__(self, log_dir, log_filename_prefix, log_path_configured, display_lines=11, skip_debug_log=False, dynamic_height=False, auto_wrap=False, max_width=460, font_config=None):
@@ -499,7 +653,7 @@ class SmartLogReader:
         
         # 新增：讀取行數（display_lines*2(其中1行為空格)行用於分析）
         # 优化：当跳过调试日志时，需要读取更多行以确保有足够的非调试日志显示
-        self.read_lines = max(display_lines * 2, 50) if skip_debug_log else display_lines * 2
+        self.read_lines = max(display_lines * 2, 100) if skip_debug_log else display_lines * 2
         self.display_lines = display_lines  # 保存顯示行數
         self.dynamic_height=dynamic_height
         
@@ -546,8 +700,9 @@ class SmartLogReader:
             "任务开始进度": re.compile(r'\[(\d+)/(\d+)\][^"]*"([^"]+)":\s*开始执行'),
             "当前进度": re.compile(r'当前进度：\s*(\d+)/(\d+)\s*\([^)]+\)'),
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
-            "产出进度": re.compile(r'当前产出(?:（预计）)?：*(\d+/\d+)个'),
-            "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟')
+            "钓鱼点进度": re.compile(r'当前钓鱼点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 新增钓鱼点进度
+            "产出进度": re.compile(r'当前产出(?:（.*?）)?：(\d+)(?:/(\d+))?个'),
+            "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟')  # 保持不变，只匹配有总时间的情况
         }
 
         self._update_log_file()  # 初始化日志文件
@@ -766,11 +921,11 @@ class SmartLogReader:
         return filtered_lines
 
     def _detect_task_switching(self, new_task):
-        """检测任务切换频率 - 识别异常高频切换"""
+        """检测任务切换频率 - 识别异常高频切换（修复版本）"""
         now = time.time()
         
-        # 记录任务切换时间
-        if new_task != self.current_task:
+        # 只在任务实际变化时记录
+        if new_task != self.current_task and new_task != "无当前任务":
             self.task_switch_times.append(now)
             
             # 清理超过1分钟的记录
@@ -783,13 +938,17 @@ class SmartLogReader:
                     self.high_frequency_warning = True
                     self.high_frequency_start = now
                     logging.warning("任务切换过于频繁！")
+                    # 注意：这里不进行任何可能影响快捷键的操作
             else:
-                self.high_frequency_warning = False
+                # 只有当切换次数真正减少时才取消警告
+                if self.high_frequency_warning and len(self.task_switch_times) < 3:
+                    self.high_frequency_warning = False
+                    logging.info("高频任务切换状态结束")
                 
-        # 检查高频状态是否已结束（超过1分钟无新警告）
-        if self.high_frequency_warning and (now - self.high_frequency_start > 60):
+        # 检查高频状态是否已结束（超过2分钟无新警告）
+        if self.high_frequency_warning and (now - self.high_frequency_start > 120):
             self.high_frequency_warning = False
-            logging.info("高频任务切换状态结束")
+            logging.info("高频任务切换状态自动结束")
             
     def _format_log_line(self, line):
         """格式化日志行 - 移除类名部分，简化显示"""
@@ -825,33 +984,44 @@ class SmartLogReader:
                     elif progress_type == "组任务进度" and len(groups) >= 4:
                         group_num, current, total, task_name = groups[:4]
                         return f"{current}/{total}"
-                    # 新增：产出进度格式
-                    elif progress_type == "产出进度" and len(groups) >= 1:
-                        progress_str = groups[0]
-                        return f"{progress_str}个"  # 添加單位
-                    # 新增：运行时间进度格式
+                    # 新增：钓鱼点进度格式
+                    elif progress_type == "钓鱼点进度" and len(groups) >= 2:
+                        current, total = groups[:2]
+                        return f"{current}/{total}"
+                    # 修改：产出进度格式 - 处理无目标值的情况
+                    elif progress_type == "产出进度":
+                        if len(groups) >= 2:
+                            current, total = groups[:2]
+                            if total is not None:  # 有目标值
+                                return f"{current}/{total}个"
+                            else:  # 无目标值
+                                return f"{current}/∞个"
+                        elif len(groups) >= 1 and groups[0] is not None:
+                            # 只有当前值，无目标值
+                            return f"{groups[0]}/∞个"
+                    # 修改：运行时间进度格式 - 确保正确处理
                     elif progress_type == "运行时间进度" and len(groups) >= 2:
                         # 礦JS本體做好日志秒數顯示轉換的話
                         # current_time, total_time = groups[:2]
                         # return f"{current_time}/{total_time}分钟"  # 添加單位
 
                         current_time, total_time = groups[:2]
-                        # 將小數分鐘轉換為分鐘:秒格式（秒數四捨五入）
+                        # 将小数分钟转换为分钟:秒格式（秒数四舍五入）
                         try:
                             current_minutes = float(current_time)
                             minutes = int(current_minutes)
-                            seconds = round((current_minutes - minutes) * 60)  # 四捨五入到整數秒
+                            seconds = round((current_minutes - minutes) * 60)  # 四舍五入到整数秒
                             
-                            # 處理四捨五入後可能出現60秒的情況
+                            # 处理四舍五入后可能出现60秒的情况
                             if seconds == 60:
                                 minutes += 1
                                 seconds = 0
                                 
-                            # 格式化為 分鐘.秒 (秒數顯示兩位數)
+                            # 格式化为 分钟.秒 (秒数显示两位数)
                             formatted_time = f"{minutes}.{seconds:02d}"
                             return f"{formatted_time}/{total_time}分钟"
                         except (ValueError, TypeError):
-                            # 如果轉換失敗，返回原始格式
+                            # 如果转换失败，返回原始格式
                             return f"{current_time}/{total_time}分钟"
                 except (ValueError, IndexError) as e:
                     logging.warning(f"进度信息解析失败: {line}, 错误: {e}")
@@ -870,8 +1040,15 @@ class SmartLogReader:
         self._detect_date_change()
         self._update_log_file()
         
+        # 动态调整读取行数：当跳过调试日志时，需要读取更多行
+        if self.skip_debug_log:
+            # 增加读取行数以确保有足够的非调试日志
+            actual_read_lines = max(self.read_lines * 3, 200)  # 至少读取200行
+        else:
+            actual_read_lines = self.read_lines
+        
         # 获取日志内容，失败时使用缓存
-        full_content = self._tail_lines(self.read_lines) or list(self._last_valid_content)
+        full_content = self._tail_lines(actual_read_lines) or list(self._last_valid_content)
 
         # 合并跨行日志条目
         merged_content = self._merge_log_lines(full_content)
@@ -898,36 +1075,57 @@ class SmartLogReader:
         latest_task = self.current_task
         latest_progress = self.current_progress
 
-        # 逆向搜索任务信息 - 从最新日志开始搜索（使用完整的50行內容進行分析）
+        # 优先搜索进度信息，然后才是任务和配置信息
+        progress_found = False
+        task_found = False
+        config_found = False
+        
+        # 逆向搜索日志内容 - 从最新日志开始搜索
         for line in reversed(full_content):
-            # 1. 更新配置（使用完整的50行內容進行分析）
-            if config_match := self.config_pattern.search(line):
-                config_name = config_match.group(1)
-                # 只更新"加载"或"开始"的配置组
-                if "加载" in line or "开始" in line:
-                    latest_config = config_name
-            # 2. 更新任务状态（取最新遇到的）
-            for task_type, pattern in self.task_patterns.items():
-                if match := pattern.search(line):
-                    task_name = match.group(1).strip()
-                    
-                    # 特殊处理：提取纯文件名（不含路径和扩展名）
-                    if '/' in task_name or '\\' in task_name:
-                        # 提取文件名（含扩展名）
-                        base_name = os.path.basename(task_name)
-                        # 移除扩展名，获取纯文件名
-                        task_name = os.path.splitext(base_name)[0]
-                    elif '.' in task_name:
-                        # 如果只有文件名但包含扩展名，也移除扩展名
-                        task_name = os.path.splitext(task_name)[0]
-                    
-                    latest_task = f"{task_type}: {task_name}"
-                    break  # 一行通常只匹配一个任务类型
-
-            # 3. 更新进度信息（取最新遇到的）
-            progress_info = self._extract_progress_info(line)
-            if progress_info:
-                latest_progress = progress_info
+            # 1. 优先搜索进度信息（最重要）
+            if not progress_found:
+                progress_info = self._extract_progress_info(line)
+                if progress_info:
+                    latest_progress = progress_info
+                    progress_found = True
+            
+            # 2. 然后搜索配置信息
+            if not config_found:
+                if config_match := self.config_pattern.search(line):
+                    config_name = config_match.group(1)
+                    # 只更新"加载完成"或"开始执行"的配置组
+                    if "加载完成" in line or "开始执行" in line:
+                        latest_config = config_name
+                        config_found = True
+            
+            # 3. 最后搜索任务信息
+            if not task_found:
+                for task_type, pattern in self.task_patterns.items():
+                    if match := pattern.search(line):
+                        task_name = match.group(1).strip()
+                        
+                        # 特殊处理：对于钓鱼点任务，保持完整的任务名称
+                        if task_type == "钓鱼点":
+                            # 钓鱼点任务名称保持原样，不进行路径和扩展名处理
+                            latest_task = f"{task_type}: {task_name}"
+                        else:
+                            # 其他任务类型：提取纯文件名（不含路径和扩展名）
+                            if '/' in task_name or '\\' in task_name:
+                                # 提取文件名（含扩展名）
+                                base_name = os.path.basename(task_name)
+                                # 移除扩展名，获取纯文件名
+                                task_name = os.path.splitext(base_name)[0]
+                            elif '.' in task_name:
+                                # 如果只有文件名但包含扩展名，也移除扩展名
+                                task_name = os.path.splitext(task_name)[0]
+                            
+                            latest_task = f"{task_type}: {task_name}"
+                        task_found = True
+                        break  # 一行通常只匹配一个任务类型
+            
+            # 如果所有信息都已找到，提前退出循环
+            if progress_found and task_found and config_found:
+                break
 
         # 最终更新状态
         self.current_config = latest_config
@@ -937,7 +1135,7 @@ class SmartLogReader:
         # 检测任务切换频率
         self._detect_task_switching(previous_task)
 
-        # 格式化日志行（只對要顯示的內容進行格式化）
+        # 格式化日志行（只对要显示的内容进行格式化）
         display_content = filtered_content[-self.display_lines:] if len(filtered_content) > self.display_lines else filtered_content
         
         # 新增：如果启用自动换行，处理换行
@@ -1342,68 +1540,75 @@ class FloatingLogViewer(tk.Tk):
 
     def _on_transparent_toggle_shortcut(self, event=None):
         """Alt+I 快捷键处理函数 - 切换透明背景模式"""
-        self.transparent_mode = not self.transparent_mode
-        
-        # 更新配置中的值
-        self.config.config["transparent_mode"] = self.transparent_mode
-        self.config.user_config["transparent_mode"] = self.transparent_mode
-        
-        if self.transparent_mode:
-            # 进入透明背景模式：使用 transparentcolor 实现背景透明，文字正常显示
-            bg_color = self.config.get("bg_color", "#000000")
-            self.configure(bg=bg_color)
-            self.attributes('-alpha', 1.0)  
-            self.attributes('-transparentcolor', bg_color)  # 将该颜色设为透明
-            self.text.config(bg=bg_color)
+        try:
+            self.transparent_mode = not self.transparent_mode
             
-            # 启用鼠标穿透（仅在全局快捷键可用时）
-            success = self._set_window_click_through(True)
-            if not success:
-                logging.warning("启用鼠标穿透失败，但透明模式已启用")
-
-            logging.info("进入透明背景模式")
-        else:
-            # 退出透明背景模式
-            bg_color = self.config.get("bg_color", "#000000")
-            self.attributes('-transparentcolor', '')  # 清除透明颜色
-            self.configure(bg=bg_color)  # 恢复窗口背景色
-            window_alpha = self.config.get("window_alpha", 0.7)
-            self.attributes('-alpha', window_alpha)  # 恢复原透明度
-            self.text.config(bg=bg_color)
+            # 更新配置中的值
+            self.config.config["transparent_mode"] = self.transparent_mode
+            self.config.user_config["transparent_mode"] = self.transparent_mode
             
-            logging.info("退出透明背景模式")
+            if self.transparent_mode:
+                # 进入透明背景模式
+                bg_color = self.config.get("bg_color", "#000000")
+                self.configure(bg=bg_color)
+                self.attributes('-alpha', 1.0)  
+                self.attributes('-transparentcolor', bg_color)
+                self.text.config(bg=bg_color)
+                
+                logging.info("进入透明背景模式")
+            else:
+                # 退出透明背景模式
+                bg_color = self.config.get("bg_color", "#000000")
+                self.attributes('-transparentcolor', '')
+                self.configure(bg=bg_color)
+                window_alpha = self.config.get("window_alpha", 0.7)
+                self.attributes('-alpha', window_alpha)
+                self.text.config(bg=bg_color)
+                
+                logging.info("退出透明背景模式")
+                
+            # 强制刷新显示
+            self._update_display()
             
-        # 强制刷新显示
-        self._update_display()
+        except Exception as e:
+            logging.error(f"切换透明模式失败: {str(e)}")
 
     def _on_click_through_toggle_shortcut(self, event=None):
         """Alt+N 快捷键处理函数 - 切换不可选中模式"""
-        self.click_through = not self.click_through
-        
-        # 更新配置中的值
-        self.config.config["click_through"] = self.click_through
-        self.config.user_config["click_through"] = self.click_through
-        
-        # 设置鼠标穿透
-        success = self._set_window_click_through(self.click_through)
-        
-        if self.click_through:
-            if success:
-                # 禁用拖动功能
-                self.text.unbind("<ButtonPress-1>")
-                self.text.unbind("<B1-Motion>")
-                logging.info("进入不可选中模式 - 鼠标穿透已启用，拖动功能已禁用")
+        try:
+            self.click_through = not self.click_through
+            
+            # 更新配置中的值
+            self.config.config["click_through"] = self.click_through
+            self.config.user_config["click_through"] = self.click_through
+            
+            # 设置鼠标穿透
+            success = self._set_window_click_through(self.click_through)
+            
+            if self.click_through:
+                if success:
+                    # 禁用拖动功能
+                    self.text.unbind("<ButtonPress-1>")
+                    self.text.unbind("<B1-Motion>")
+                    logging.info("进入不可选中模式 - 鼠标穿透已启用，拖动功能已禁用")
+                else:
+                    logging.warning("进入不可选中模式失败")
+                    self.click_through = False  # 回滚状态
             else:
-                logging.warning("进入不可选中模式失败")
-        else:
-            if success:
-                # 启用拖动功能
-                self.text.bind("<ButtonPress-1>", self._handle_drag_start)
-                self.text.bind("<B1-Motion>", self._handle_drag_move)
-                logging.info("退出不可选中模式 - 鼠标穿透已禁用，拖动功能已启用")
-            else:
-                logging.warning("退出不可选中模式失败")
+                if success:
+                    # 启用拖动功能
+                    self.text.bind("<ButtonPress-1>", self._handle_drag_start)
+                    self.text.bind("<B1-Motion>", self._handle_drag_move)
+                    logging.info("退出不可选中模式 - 鼠标穿透已禁用，拖动功能已启用")
+                else:
+                    logging.warning("退出不可选中模式失败")
+                    self.click_through = True  # 回滚状态
+                    
+        except Exception as e:
+            logging.error(f"切换不可选中模式失败: {str(e)}")
+            self.click_through = not self.click_through  # 发生异常时回滚状态
     
+    # 修改 _set_window_click_through 方法，增加更详细的错误处理
     def _set_window_click_through(self, enable):
         """设置窗口鼠标穿透（仅在Windows且全局快捷键可用时生效）"""
         if not KEYBOARD_AVAILABLE or os.name != 'nt':
@@ -1427,17 +1632,18 @@ class FloatingLogViewer(tk.Tk):
             if enable:
                 # 添加透明样式 - 鼠标穿透
                 new_style = ex_style | WS_EX_TRANSPARENT
-                logging.info("启用窗口鼠标穿透")
+                logging.debug("启用窗口鼠标穿透")
             else:
                 # 移除透明样式 - 恢复正常
                 new_style = ex_style & ~WS_EX_TRANSPARENT
-                logging.info("禁用窗口鼠标穿透")
+                logging.debug("禁用窗口鼠标穿透")
                 
             # 设置新的扩展样式
             result = ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
             
             if result == 0:
-                logging.error("设置窗口样式失败")
+                error_code = ctypes.windll.kernel32.GetLastError()
+                logging.error(f"设置窗口样式失败，错误代码: {error_code}")
                 return False
                 
             # 强制刷新窗口
@@ -1637,23 +1843,6 @@ class FloatingLogViewer(tk.Tk):
 
         update_loop()
 
-    # 只比较日志内容，不包括状态行
-    def _force_immediate_display_update(self):
-        """强制立即更新显示，不依赖日志内容变化"""
-        # 设置强制更新标志
-        self._force_update = True
-        
-        # 清除之前的内容缓存，确保强制更新
-        self._prev_content = []
-        self.last_change_time = datetime.now()
-        
-        # 强制调用更新显示
-        self._update_display()
-        
-        # 确保窗口完全刷新
-        self.update_idletasks()
-        self.update()
-        
     # 只比较日志内容，不包括状态行
     def _get_content_hash(self, content):
         """获取内容的哈希值用于比较变化"""
@@ -1871,7 +2060,7 @@ class FloatingLogViewer(tk.Tk):
             if (self._font_cache is None or 
                 self._last_font_config != current_font_config):
                 
-                self._font_cache = tk.font.Font(font=current_font_config)
+                self._font_cache = tkfont.Font(font=current_font_config)
                 self._last_font_config = current_font_config
                 logging.debug("字体缓存已更新")
             
