@@ -1,4 +1,4 @@
-# 1.3.4
+# 1.3.5
 __author__ = "蜜柑魚"
 
 import ctypes
@@ -653,7 +653,7 @@ class SmartLogReader:
         
         # 新增：讀取行數（display_lines*2(其中1行為空格)行用於分析）
         # 优化：当跳过调试日志时，需要读取更多行以确保有足够的非调试日志显示
-        self.read_lines = max(display_lines * 2, 100) if skip_debug_log else display_lines * 2
+        self.read_lines = max(display_lines * 2, 100) if skip_debug_log else display_lines * 3
         self.display_lines = display_lines  # 保存顯示行數
         self.dynamic_height=dynamic_height
         
@@ -701,8 +701,10 @@ class SmartLogReader:
             "当前进度": re.compile(r'当前进度：\s*(\d+)/(\d+)\s*\([^)]+\)'),
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
             "钓鱼点进度": re.compile(r'当前钓鱼点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 新增钓鱼点进度
-            "产出进度": re.compile(r'当前产出(?:（.*?）)?：(\d+)(?:/(\d+))?个'),
-            "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟')  # 保持不变，只匹配有总时间的情况
+            "产出进度": re.compile(r'当前产出(?:（.*?）)?：\s*(\d+)(?:/(\d+))?\s*个'),
+            "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟'),  # 保持不变，只匹配有总时间的情况
+            # 新增：循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
+            "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环')
         }
 
         self._update_log_file()  # 初始化日志文件
@@ -988,6 +990,11 @@ class SmartLogReader:
                     elif progress_type == "钓鱼点进度" and len(groups) >= 2:
                         current, total = groups[:2]
                         return f"{current}/{total}"
+                     # 新增：循环执行进度格式
+                    elif progress_type == "循环执行进度" and len(groups) >= 3:
+                        item_name, current, total = groups[:3]
+                        # 对于循环执行，我们可以显示为 "9/56次" 或者直接 "9/56"
+                        return f"{current}/{total}"
                     # 修改：产出进度格式 - 处理无目标值的情况
                     elif progress_type == "产出进度":
                         if len(groups) >= 2:
@@ -1043,9 +1050,9 @@ class SmartLogReader:
         # 动态调整读取行数：当跳过调试日志时，需要读取更多行
         if self.skip_debug_log:
             # 增加读取行数以确保有足够的非调试日志
-            actual_read_lines = max(self.read_lines * 3, 200)  # 至少读取200行
+            actual_read_lines = max(self.read_lines * 2, 400)  # 增加到400行
         else:
-            actual_read_lines = self.read_lines
+            actual_read_lines = max(self.read_lines, 150)  # 最少150行
         
         # 获取日志内容，失败时使用缓存
         full_content = self._tail_lines(actual_read_lines) or list(self._last_valid_content)
