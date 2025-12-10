@@ -1,4 +1,5 @@
-# 1.3.5
+# 1.3.6
+
 __author__ = "蜜柑魚"
 
 import ctypes
@@ -699,12 +700,14 @@ class SmartLogReader:
         self.progress_patterns = {
             "任务开始进度": re.compile(r'\[(\d+)/(\d+)\][^"]*"([^"]+)":\s*开始执行'),
             "当前进度": re.compile(r'当前进度：\s*(\d+)/(\d+)\s*\([^)]+\)'),
+            "采集CD进度": re.compile(r'当前进度：路径组[^为]*为第\s*(\d+)/(\d+)\s*个'),
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
             "钓鱼点进度": re.compile(r'当前钓鱼点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 新增钓鱼点进度
             "产出进度": re.compile(r'当前产出(?:（.*?）)?：\s*(\d+)(?:/(\d+))?\s*个'),
             "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟'),  # 保持不变，只匹配有总时间的情况
             # 新增：循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
-            "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环')
+            "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环'),
+            "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+')
         }
 
         self._update_log_file()  # 初始化日志文件
@@ -923,32 +926,46 @@ class SmartLogReader:
         return filtered_lines
 
     def _detect_task_switching(self, new_task):
-        """检测任务切换频率 - 识别异常高频切换（修复版本）"""
+        """检测任务切换频率 - 只在实际任务名称变化时记录（修复版本）"""
         now = time.time()
         
-        # 只在任务实际变化时记录
-        if new_task != self.current_task and new_task != "无当前任务":
+        def get_base_task(task_str):
+            """提取基础任务名称（忽略进度变化）"""
+            if not task_str or task_str == "无当前任务":
+                return task_str
+            # 如果是完整格式 [当前任务] [进度] 任务名称，提取任务名称部分
+            if task_str.startswith("[当前任务]") and "]" in task_str:
+                parts = task_str.split("]", 2)
+                if len(parts) >= 3:
+                    return parts[2].strip()
+            return task_str
+        
+        current_base_task = get_base_task(self.current_task)
+        new_base_task = get_base_task(new_task)
+        
+        # 只在任务实际变化时记录（忽略进度变化）
+        if new_base_task != current_base_task and new_base_task != "无当前任务":
             self.task_switch_times.append(now)
             
             # 清理超过1分钟的记录
             while self.task_switch_times and (now - self.task_switch_times[0] > 60):
                 self.task_switch_times.popleft()
             
-            # 检查1分钟内是否超过5次切换
-            if len(self.task_switch_times) >= 5:
+            # 检查1分钟内是否超过5次切换(BUG:好像會重複計數)
+            if len(self.task_switch_times) >= 8:
                 if not self.high_frequency_warning:
                     self.high_frequency_warning = True
                     self.high_frequency_start = now
-                    logging.warning("任务切换过于频繁！")
+                    logging.warning("任务切换过于频繁！检测到 %d 次任务切换/分钟", (len(self.task_switch_times)/2))
                     # 注意：这里不进行任何可能影响快捷键的操作
             else:
                 # 只有当切换次数真正减少时才取消警告
                 if self.high_frequency_warning and len(self.task_switch_times) < 3:
                     self.high_frequency_warning = False
                     logging.info("高频任务切换状态结束")
-                
-        # 检查高频状态是否已结束（超过2分钟无新警告）
-        if self.high_frequency_warning and (now - self.high_frequency_start > 120):
+        
+        # 检查高频状态是否已结束（超过1分钟30秒无新警告）
+        if self.high_frequency_warning and (now - self.high_frequency_start > 90):
             self.high_frequency_warning = False
             logging.info("高频任务切换状态自动结束")
             
@@ -981,6 +998,9 @@ class SmartLogReader:
                         self.task_progress[task_name] = f"{current}/{total}"
                         return f"{current}/{total}"
                     elif progress_type == "当前进度" and len(groups) >= 2:
+                        current, total = groups[:2]
+                        return f"{current}/{total}"
+                    elif progress_type == "采集CD进度" and len(groups) >= 2:
                         current, total = groups[:2]
                         return f"{current}/{total}"
                     elif progress_type == "组任务进度" and len(groups) >= 4:
@@ -1030,6 +1050,10 @@ class SmartLogReader:
                         except (ValueError, TypeError):
                             # 如果转换失败，返回原始格式
                             return f"{current_time}/{total_time}分钟"
+                    # 在 _extract_progress_info 方法中更新 F2 的处理逻辑
+                    elif progress_type == "F2" and len(groups) >= 2:
+                        current, total = groups[:2]
+                        return f"{current}/{total}轮"
                 except (ValueError, IndexError) as e:
                     logging.warning(f"进度信息解析失败: {line}, 错误: {e}")
         return None
