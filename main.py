@@ -1,27 +1,40 @@
-# 1.3.6
+### 1.3.7
+# - **新增：日志同步功能**
+#   - 支持将日志自动同步到指定目录（如云端同步目录）
+#   - 方便用户通过手机或其他设备远程查看日志
+#   - 支持配置同步间隔和保留天数
+#   - 日期变更时自动同步前一天文件
 
 __author__ = "蜜柑魚"
 
-import ctypes
-import tkinter as tk
-import tkinter.font as tkfont
-import re
-import time
+# 在頂部導入
 import os
 import sys
+import re
+import time
 import logging
-from datetime import datetime 
-from pathlib import Path
-from collections import deque
+import shutil
 import threading
 import queue
+from datetime import datetime, timedelta
+from pathlib import Path
+from collections import deque
+
+# tkinter 相關
+import tkinter as tk
+import tkinter.font as tkfont
+
+# Windows API
+import ctypes
+
+# 鍵盤全局快捷鍵
 try:
     import keyboard
     KEYBOARD_AVAILABLE = True
 except ImportError:
     KEYBOARD_AVAILABLE = False
-    logging.warning("keyboard 库未安装，全局快捷键不可用")
-    # 创建虚拟的 KeyboardEvent 类以避免 NameError
+    logging.warning("keyboard 庫未安裝，全局快捷鍵不可用")
+    # 創建虛擬的 KeyboardEvent 類以避免 NameError
     class KeyboardEvent:
         pass
 
@@ -60,6 +73,11 @@ class ConfigLoader:
             "log_path": "",  # 原神日志文件目录路径
             "log_filename_prefix": "better-genshin-impact",  # 日志文件名前缀
             "skip_debug_log": False,  # 是否跳过调试日志
+            "backup_path": "",              # 备份目录路径，为空则不备份
+            "backup_interval": 60,          # 备份间隔（分钟）
+            "backup_debug": False,          # 调试开关：初始备份一次
+            "backup_enabled": False,        # 备份功能总开关（根据backup_path是否为空自动设置）
+            "backup_keep_days": 10,         # 保留最近多少天的备份文件
             "window_alpha": 0.7,      # 窗口透明度
             "bg_color": "#000000",    # 背景颜色
             "normal_color": "#00FF00",# 正常状态文字颜色
@@ -209,6 +227,27 @@ class ConfigLoader:
                 self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 self.user_config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 
+            elif key in ["backup_interval", "backup_keep_days"]:
+                self.config[key] = int(value)
+                self.user_config[key] = int(value)
+            
+            elif key in ["backup_debug", "backup_enabled"]:
+                self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
+                self.user_config[key] = value.lower() in ('true', '1', 'yes', 'on')
+                
+            elif key == "backup_path":
+                # 處理備份路徑
+                value_stripped = value.strip() if value else ""
+                self.config[key] = value_stripped
+                self.user_config[key] = value_stripped
+                
+                # 如果備份路徑不為空，則自動啟用備份功能
+                if value_stripped:
+                    self.config["backup_enabled"] = True
+                    self.user_config["backup_enabled"] = True
+                else:
+                    self.config["backup_enabled"] = False
+                    self.user_config["backup_enabled"] = False
             else:
                 self.config[key] = value
                 self.user_config[key] = value
@@ -626,7 +665,10 @@ class GlobalShortcutManager:
         logging.info("全局快捷键监听已停止")
 
 class SmartLogReader:
-    def __init__(self, log_dir, log_filename_prefix, log_path_configured, display_lines=11, skip_debug_log=False, dynamic_height=False, auto_wrap=False, max_width=460, font_config=None):
+    def __init__(self, log_dir, log_filename_prefix, log_path_configured, display_lines=11, 
+                 skip_debug_log=False, dynamic_height=False, auto_wrap=False, 
+                 max_width=460, font_config=None, backup_path="", backup_interval=60, 
+                 backup_debug=False, backup_enabled=False, backup_keep_days=10):
         """智能日志读取器 - 负责读取和解析原神日志文件"""
         # 在初始化时验证log_dir的有效性
         if not log_path_configured:
@@ -642,6 +684,19 @@ class SmartLogReader:
         self.log_filename_prefix = log_filename_prefix
         self.log_path_configured = log_path_configured  # 接收配置狀態
         self.skip_debug_log = skip_debug_log  # 是否跳过调试日志
+        
+        # 备份配置
+        self.backup_enabled = backup_enabled and backup_path and backup_path.strip()
+        self.backup_path = Path(backup_path.strip()) if (backup_path and backup_path.strip()) else None
+        self.backup_interval = backup_interval  # 分鐘
+        self.backup_debug = backup_debug
+        self.backup_keep_days = backup_keep_days  # 保留天數
+        
+        # 备份状态跟踪
+        self.last_backup_time = 0
+        self.last_backup_date = None
+        self.backup_timer = None
+        self.backup_thread = None
         
         # 新增：换行相关配置
         self.auto_wrap = auto_wrap
@@ -711,6 +766,9 @@ class SmartLogReader:
         }
 
         self._update_log_file()  # 初始化日志文件
+        # 如果启用了备份且备份路径有效，初始化备份功能
+        if self.backup_enabled:
+            self._init_backup()
 
     def _check_log_path(self):
         """检查日志路径是否存在且有效"""
@@ -844,12 +902,20 @@ class SmartLogReader:
     def _detect_date_change(self):
         """精确检测日期变更 - 处理跨天的日志文件切换"""
         today = datetime.now().date()
+        date_changed = False
+        
         if today != self.current_date:
             logging.info(f"检测到日期变更 {self.current_date} → {today}")
+            
+            # 备份前一天的文件
+            self._check_and_backup_previous_day()
+            
+            # 更新当前日期
             self.current_date = today
             self._update_log_file()
-            return True
-        return False
+            date_changed = True
+            
+        return date_changed
 
     def _merge_log_lines(self, lines):
         """合并跨行的日志条目 - 处理异常堆栈等多行日志"""
@@ -951,12 +1017,12 @@ class SmartLogReader:
             while self.task_switch_times and (now - self.task_switch_times[0] > 60):
                 self.task_switch_times.popleft()
             
-            # 检查1分钟内是否超过5次切换(BUG:好像會重複計數)
+            # 检查1分钟内是否超过4次切换(BUG:好像會重複計數)
             if len(self.task_switch_times) >= 8:
                 if not self.high_frequency_warning:
                     self.high_frequency_warning = True
                     self.high_frequency_start = now
-                    logging.warning("任务切换过于频繁！检测到 %d 次任务切换/分钟", (len(self.task_switch_times)/2))
+                    logging.warning("任务切换过于频繁！检测到 %d 次任务切换/分钟", (len(self.task_switch_times/2)))
                     # 注意：这里不进行任何可能影响快捷键的操作
             else:
                 # 只有当切换次数真正减少时才取消警告
@@ -1298,7 +1364,232 @@ class SmartLogReader:
                 wrapped_lines.append(current_chunk)
             else:
                 wrapped_lines.append(indent + current_chunk)
+    
+    def _init_backup(self):
+        """初始化备份功能"""
+        # 檢查是否啟用備份功能且路徑有效
+        if not self.backup_enabled or not self.backup_path:
+            logging.info(f"備份功能未啟用: enabled={self.backup_enabled}, path={self.backup_path}")
+            return
             
+        try:
+            # 確保備份目錄存在
+            self.backup_path.mkdir(parents=True, exist_ok=True)
+            
+            # 確認目錄是否創建成功
+            if not self.backup_path.exists():
+                logging.error(f"無法創建備份目錄: {self.backup_path}")
+                self.backup_enabled = False
+                return
+                
+            logging.info(f"備份目錄已準備: {self.backup_path}")
+            
+            # 如果調試模式開啟，立即執行一次備份
+            if self.backup_debug and self._current_file:
+                self._backup_log_file(debug_mode=True)
+                
+            # 啟動備份定時器
+            self._start_backup_timer()
+            
+            # 初始清理
+            self._cleanup_old_backups()
+            
+        except Exception as e:
+            logging.error(f"初始化備份功能失敗: {str(e)}")
+            self.backup_enabled = False
+    
+    def _start_backup_timer(self):
+        """启动备份定时器"""
+        if not self.backup_enabled or not self.backup_interval:
+            return
+            
+        # 取消现有的定时器
+        if self.backup_timer:
+            self.backup_timer.cancel()
+            
+        # 创建新的定时器
+        self.backup_timer = threading.Timer(
+            self.backup_interval * 60,  # 转换为秒
+            self._on_backup_timer
+        )
+        self.backup_timer.daemon = True
+        self.backup_timer.start()
+        logging.info(f"备份定时器已启动，间隔: {self.backup_interval}分钟")
+    
+    def _on_backup_timer(self):
+        """备份定时器回调函数"""
+        try:
+            # 备份当前日志文件
+            if self._current_file and self._current_file.exists():
+                self._backup_log_file()
+                
+        except Exception as e:
+            logging.error(f"定时备份失败: {str(e)}")
+            
+        finally:
+            # 重新启动定时器
+            self._start_backup_timer()
+    
+    def _backup_log_file(self, debug_mode=False):
+        """备份日志文件"""
+        if not self.backup_enabled or not self._current_file:
+            return
+            
+        try:
+            current_time = time.time()
+            
+            # 检查是否需要备份（距离上次备份时间超过5秒，避免频繁备份）
+            if not debug_mode and (current_time - self.last_backup_time < 5):
+                return
+                
+            source_file = self._current_file
+            if not source_file or not source_file.exists():
+                return
+                
+            # 获取文件名（不包含时间戳）
+            file_name = source_file.name
+            # 移除时间戳部分，只保留基础文件名
+            if "_" in file_name and file_name.endswith(".log"):
+                # 处理带序号的文件名：better-genshin-impactYYYYMMDD_001.log
+                base_name = file_name.split("_")[0] + ".log"
+            else:
+                # 处理不带序号的文件名：better-genshin-impactYYYYMMDD.log
+                # 这里我们保留整个文件名，因为日期是文件的一部分
+                base_name = file_name
+                
+            target_file = self.backup_path / base_name
+            
+            # 复制文件
+            shutil.copy2(source_file, target_file)
+            
+            self.last_backup_time = current_time
+            log_msg = f"日志文件已备份: {source_file.name} -> {target_file}"
+            if debug_mode:
+                log_msg = "[调试] " + log_msg
+            logging.info(log_msg)
+            
+            # 备份完成后清理旧文件
+            self._cleanup_old_backups()
+            
+        except Exception as e:
+            logging.error(f"备份日志文件失败: {str(e)}")
+    
+    def _check_and_backup_previous_day(self):
+        """检查并备份前一天的文件（在检测到日期变更时调用）"""
+        if not self.backup_enabled:
+            return
+            
+        try:
+            # 获取前一天的日期
+            yesterday = datetime.now().date() - timedelta(days=1)
+            
+            # 查找前一天的文件
+            patterns = self._generate_log_patterns(yesterday)
+            yesterday_file = None
+            
+            for pattern in patterns:
+                if '*' in str(pattern):
+                    # 使用通配符匹配带序号的文件
+                    import glob
+                    matches = glob.glob(str(pattern))
+                    if matches:
+                        # 找到修改时间最新的文件
+                        matches.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                        yesterday_file = Path(matches[0])
+                        break
+                else:
+                    if pattern.exists():
+                        yesterday_file = pattern
+                        break
+            
+            # 如果找到前一天的文件，备份它
+            if yesterday_file and yesterday_file.exists():
+                # 获取文件名（不包含时间戳）
+                file_name = yesterday_file.name
+                if "_" in file_name and file_name.endswith(".log"):
+                    base_name = file_name.split("_")[0] + ".log"
+                else:
+                    base_name = file_name
+                    
+                target_file = self.backup_path / base_name
+                
+                # 复制文件
+                shutil.copy2(yesterday_file, target_file)
+                logging.info(f"前一天日志文件已备份: {yesterday_file.name} -> {target_file}")
+                
+                # 清理旧文件
+                self._cleanup_old_backups()
+                
+        except Exception as e:
+            logging.error(f"备份前一天文件失败: {str(e)}")
+    
+    def _cleanup_old_backups(self):
+        """清理超过指定天数的旧备份文件"""
+        if not self.backup_enabled or not self.backup_path:
+            return
+            
+        try:
+            # 获取当前日期
+            current_date = datetime.now().date()
+            
+            # 列出备份目录中的所有文件
+            for file_path in self.backup_path.glob("*.log"):
+                # 尝试从文件名中提取日期
+                date_str = self._extract_date_from_filename(file_path.name)
+                
+                if date_str:
+                    try:
+                        file_date = datetime.strptime(date_str, "%Y%m%d").date()
+                        
+                        # 计算文件日期与当前日期的天数差
+                        days_diff = (current_date - file_date).days
+                        
+                        # 如果超过配置的天数，删除文件
+                        if days_diff > self.backup_keep_days:
+                            file_path.unlink()
+                            logging.info(f"删除旧备份文件: {file_path.name} (创建于 {days_diff} 天前)")
+                    except ValueError:
+                        # 日期格式不正确，跳过
+                        continue
+                else:
+                    # 无法从文件名提取日期，尝试使用文件修改时间
+                    try:
+                        file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime).date()
+                        days_diff = (current_date - file_mtime).days
+                        
+                        if days_diff > self.backup_keep_days:
+                            file_path.unlink()
+                            logging.info(f"删除旧备份文件(按修改时间): {file_path.name} (修改于 {days_diff} 天前)")
+                    except Exception:
+                        # 无法获取修改时间，跳过
+                        continue
+                        
+        except Exception as e:
+            logging.error(f"清理旧备份文件失败: {str(e)}")
+    
+    def _extract_date_from_filename(self, filename):
+        """从文件名中提取日期字符串 (YYYYMMDD 格式)"""
+        # 尝试匹配以下格式：
+        # 1. better-genshin-impact20231201.log
+        # 2. better-genshin-impact20231201_001.log
+        
+        # 匹配8位数字日期
+        match = re.search(r'(\d{8})', filename)
+        if match:
+            return match.group(1)
+        return None
+    
+    def stop_backup(self):
+        """停止备份功能"""
+        if self.backup_timer:
+            self.backup_timer.cancel()
+            self.backup_timer = None
+            
+        if self.backup_thread:
+            self.backup_thread = None
+            
+        self.backup_enabled = False
+        logging.info("备份功能已停止")
     
 
 class FloatingLogViewer(tk.Tk):
@@ -1318,6 +1609,13 @@ class FloatingLogViewer(tk.Tk):
         dynamic_height = config.get("dynamic_height", False)
         max_width = config.get("max_width", 460)
         
+        # 从配置中获取备份设置
+        backup_path = config.get("backup_path", "")
+        backup_interval = config.get("backup_interval", 60)
+        backup_debug = config.get("backup_debug", False)
+        backup_enabled = config.get("backup_enabled", False)  # 從配置讀取啟用狀態
+        backup_keep_days = config.get("backup_keep_days", 10)
+        
         # 准备字体配置传递给 SmartLogReader
         font_config = {
             "font_name": config.get("font_name", "Consolas"),
@@ -1333,9 +1631,14 @@ class FloatingLogViewer(tk.Tk):
             display_lines, 
             skip_debug_log,
             dynamic_height,
-            auto_wrap,        # 新增
-            max_width,        # 新增
-            font_config       # 新增
+            auto_wrap,
+            max_width,
+            font_config,
+            backup_path,          # 新增
+            backup_interval,      # 新增
+            backup_debug,         # 新增
+            backup_enabled,        # 新增
+            backup_keep_days      # 新增
         )
         self._prev_content = []  # 上一次显示的内容
         self.last_change_time = datetime.now()  # 最后内容变更时间
@@ -2140,6 +2443,10 @@ class FloatingLogViewer(tk.Tk):
     def destroy(self):
         """安全关闭程序 - 保存窗口位置和状态到config.txt"""
         
+        # 停止日志备份功能
+        if hasattr(self, 'reader') and hasattr(self.reader, 'stop_backup'):
+            self.reader.stop_backup()
+        
         # 停止全局快捷键监听
         if hasattr(self, 'shortcut_manager'):
             self.shortcut_manager.stop_listening()
@@ -2160,6 +2467,13 @@ if __name__ == "__main__":
     try:
         # 加载配置并启动程序
         config_loader = ConfigLoader("config.txt")
+        
+        # 可選：保留日誌記錄，移除print
+        backup_path = config_loader.get("backup_path", "")
+        if backup_path:
+            logging.info(f"備份功能已啟用 - 路徑: {backup_path}")
+            logging.info(f"備份間隔: {config_loader.get('backup_interval', 60)} 分鐘, 保留天數: {config_loader.get('backup_keep_days', 10)} 天")
+        
         viewer = FloatingLogViewer(config_loader)
         viewer.mainloop()
     except Exception as e:
