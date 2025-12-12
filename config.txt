@@ -6,7 +6,7 @@
 # 日志文件目录路径（必须设置）
 # 请修改为您的BetterGI日志实际目录路径
 # 示例：log_path=C:\Program Files\BetterGI\log
-# log_path=D:\BetterGI\BetterGI_051\log
+# log_path=D:\BetterGI\BetterGI_054\log
 
 # 日志文件名前缀（通常不需要修改）
 log_filename_prefix=better-genshin-impact
@@ -22,6 +22,17 @@ skip_debug_log=false
 
 # 自适应高度
 dynamic_height=true
+
+# 备份配置
+# -----------------
+# 备份目录路径（留空则不备份，设置路径会自动启用备份功能）
+backup_path=G:\我的雲端硬碟\BGI_log
+# 备份间隔（分钟），默认60
+backup_interval=60
+# 保留最近多少天的备份文件，默认10
+backup_keep_days=10
+# 调试开关：启动时立即备份一次
+backup_debug=false
 
 # =============================================
 # 主样式段 - 用户自定义设置
