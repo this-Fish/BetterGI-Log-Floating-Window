@@ -1,9 +1,16 @@
-### 1.3.7
-# - **新增：日志同步功能**
-#   - 支持将日志自动同步到指定目录（如云端同步目录）
-#   - 方便用户通过手机或其他设备远程查看日志
-#   - 支持配置同步间隔和保留天数
-#   - 日期变更时自动同步前一天文件
+### 1.3.8
+# - 修复 换行处理函数的数据异常 导致 日志内容不刷新
+# - 修复 更改进度被错误计入高频切换
+# - 显示一条龙运行进度 
+#   - 一条龙/配置组任务执行
+#   - (一条龙的任务关键词过少，检测不了不能更新配置组名)
+# - 其他优化
+#    - 备份功能 备份时 保留序号
+#      - better-genshin-impactYYYYMMDD_001.log
+#    - 补充 Alt+K 的窗口内快捷键
+#    - 重复的安全检查（防御性编程）
+#    - 多层的异常处理
+#    - 兼容性快捷键备用方案
 
 __author__ = "蜜柑魚"
 
@@ -31,8 +38,10 @@ import ctypes
 try:
     import keyboard
     KEYBOARD_AVAILABLE = True
+    KEYBOARD_MODULE = keyboard  # 新增：保存模組引用
 except ImportError:
     KEYBOARD_AVAILABLE = False
+    KEYBOARD_MODULE = None  # 新增：設置為 None
     logging.warning("keyboard 庫未安裝，全局快捷鍵不可用")
     # 創建虛擬的 KeyboardEvent 類以避免 NameError
     class KeyboardEvent:
@@ -206,13 +215,17 @@ class ConfigLoader:
                 return
 
             if key in ["window_x", "window_y"]:
-                # 简化处理：空字符串或无效值都设为 None
-                if value and value.strip():
-                    self.config[key] = int(value)
-                    self.user_config[key] = int(value)
-                else:
+                try:
+                    if value and value.strip():
+                        self.config[key] = int(value)
+                        self.user_config[key] = int(value)
+                    else:
+                        self.config[key] = None
+                        self.user_config[key] = None
+                except (ValueError, TypeError):
                     self.config[key] = None
                     self.user_config[key] = None
+                    logging.warning(f"第{line_num}行: {key} 轉換為整數失敗，設為 None")
                     
             elif key == "window_alpha":
                 self.config[key] = float(value)
@@ -361,14 +374,23 @@ class ConfigLoader:
                     key = key.strip()
                     
                     if key in updates:
-                        # 保留行尾的注释
-                        comment_part = ""
-                        if '#' in original_value:
-                            value_part, comment_part = original_value.split('#', 1)
-                            comment_part = '#' + comment_part
+                        # 找到原始行中的注释部分
+                        line_without_newline = line.rstrip('\n')
+                        if '#' in line_without_newline:
+                            # 找到注释开始位置（在等号之后）
+                            hash_index = line_without_newline.find('#', equal_index)
+                            equal_index = line_without_newline.find('=')
+                            if hash_index > equal_index:
+                                # 注释在等号后面，保留注释
+                                new_line = line_without_newline[:equal_index+1] + updates[key] + line_without_newline[hash_index:] + '\n'
+                            else:
+                                # 注释在等号前面，不应该发生
+                                new_line = line_without_newline[:equal_index+1] + updates[key] + '\n'
+                        else:
+                            # 没有注释
+                            equal_index = line_without_newline.find('=')
+                            new_line = line_without_newline[:equal_index+1] + updates[key] + '\n'
                         
-                        # 更新配置值
-                        new_line = f"{key}={updates[key]}{comment_part}\n"
                         new_lines.append(new_line)
                         found_keys.add(key)
                     else:
@@ -426,9 +448,16 @@ class GlobalShortcutManager:
         self.hotkeys_registered = False
         self.last_health_check = time.time()
         self.health_check_interval = 30  # 每30秒检查一次健康状态
+        self._lock = threading.Lock()  # 新增
+        # 使用全局的 keyboard 模組
+        self.keyboard_module = KEYBOARD_MODULE
         
     def start_listening(self):
         """启动全局快捷键监听"""
+        with self._lock:
+            if self.listening:  # 防止重複啟動
+                return
+            
         if not KEYBOARD_AVAILABLE:
             logging.warning("keyboard 库不可用，跳过全局快捷键初始化")
             return
@@ -477,10 +506,10 @@ class GlobalShortcutManager:
     
     def _safe_unhook_all(self):
         """安全地清理所有热键"""
-        if not KEYBOARD_AVAILABLE:
+        if not KEYBOARD_AVAILABLE or self.keyboard_module is None:
             return
         try:
-            keyboard.unhook_all()
+            self.keyboard_module.unhook_all()
             self.hotkeys_registered = False
             time.sleep(0.1)  # 短暂延迟确保清理完成
         except Exception as e:
@@ -498,21 +527,37 @@ class GlobalShortcutManager:
             # 短暂延迟确保系统稳定
             time.sleep(0.2)
             
-            # 注册全局快捷键 - 使用更简单的lambda函数
-            keyboard.add_hotkey('alt+p', self._create_event_callback('close'), suppress=True)
-            keyboard.add_hotkey('alt+u', self._create_event_callback('reset_position'), suppress=True)
-            keyboard.add_hotkey('alt+i', self._create_event_callback('toggle_transparent'), suppress=True)
-            keyboard.add_hotkey('alt+n', self._create_event_callback('toggle_click_through'), suppress=True)
-            keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
-            
-            self.hotkeys_registered = True
-            logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式)")
-            return True
+            # 尝试注册全局快捷键
+            try:
+                keyboard.add_hotkey('alt+p', self._create_event_callback('close'), suppress=True)
+                keyboard.add_hotkey('alt+u', self._create_event_callback('reset_position'), suppress=True)
+                keyboard.add_hotkey('alt+i', self._create_event_callback('toggle_transparent'), suppress=True)
+                keyboard.add_hotkey('alt+n', self._create_event_callback('toggle_click_through'), suppress=True)
+                keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
+                
+                self.hotkeys_registered = True
+                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式)")
+                return True
+                
+            except Exception as register_error:
+                logging.warning(f"全局快捷键注册失败（可能是安全软件阻止），回退到窗口内快捷键: {str(register_error)}")
+                # 回退到窗口内快捷键
+                self._fallback_to_window_hotkeys()
+                return False
             
         except Exception as e:
             logging.error(f"注册全局快捷键失败: {str(e)}")
             self.hotkeys_registered = False
+            # 即使失败也尝试回退
+            self._fallback_to_window_hotkeys()
             return False
+    
+    def _fallback_to_window_hotkeys(self):
+        """回退到窗口内快捷键"""
+        logging.info("使用窗口内快捷键替代全局快捷键")
+        # 这里实际上不需要做太多，因为FloatingLogViewer会自己设置窗口内快捷键
+        # 主要是在状态日志中表明正在使用备用方案
+        self.hotkeys_registered = False  # 标记为未注册成功
     
     def _create_event_callback(self, event_type):
         """创建事件回调函数 - 避免lambda函数的内存问题"""
@@ -660,6 +705,9 @@ class GlobalShortcutManager:
     
     def stop_listening(self):
         """停止监听 - 增强版本"""
+        with self._lock:
+            if not self.listening:
+                return
         self.listening = False
         self._safe_unhook_all()
         logging.info("全局快捷键监听已停止")
@@ -691,6 +739,8 @@ class SmartLogReader:
         self.backup_interval = backup_interval  # 分鐘
         self.backup_debug = backup_debug
         self.backup_keep_days = backup_keep_days  # 保留天數
+        # self._backup_thread_local = threading.local()
+        
         
         # 备份状态跟踪
         self.last_backup_time = 0
@@ -724,9 +774,10 @@ class SmartLogReader:
         self.current_task = "无当前任务"
         self.current_config = "无激活配置组"
         
-        # 任务进度信息
-        self.current_progress = "0/0"
-        self.task_progress = {}  # 任务进度缓存
+        # 任務進度信息 - 分開處理
+        self.current_progress = "0/0"  # 任務進度
+        self.current_config_progress = "0/0"  # 配置組進度 - 新增
+        self.task_progress = {}  # 任務進度緩存
         
         # 任务切换频率监测
         self.task_switch_times = deque(maxlen=10)  # 存储最近10次任务切换时间
@@ -762,13 +813,14 @@ class SmartLogReader:
             "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟'),  # 保持不变，只匹配有总时间的情况
             # 新增：循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
             "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环'),
-            "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+')
+            "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+'),
+            "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
         }
 
-        self._update_log_file()  # 初始化日志文件
         # 如果启用了备份且备份路径有效，初始化备份功能
         if self.backup_enabled:
             self._init_backup()
+        self._update_log_file()  # 初始化日志文件
 
     def _check_log_path(self):
         """检查日志路径是否存在且有效"""
@@ -907,8 +959,11 @@ class SmartLogReader:
         if today != self.current_date:
             logging.info(f"检测到日期变更 {self.current_date} → {today}")
             
-            # 备份前一天的文件
-            self._check_and_backup_previous_day()
+            try:
+                # 备份前一天的文件
+                self._check_and_backup_previous_day()
+            except Exception as e:
+                logging.error(f"备份前一天文件失败，但继续处理日期变更: {str(e)}")
             
             # 更新当前日期
             self.current_date = today
@@ -995,48 +1050,114 @@ class SmartLogReader:
         """检测任务切换频率 - 只在实际任务名称变化时记录（修复版本）"""
         now = time.time()
         
-        def get_base_task(task_str):
-            """提取基础任务名称（忽略进度变化）"""
-            if not task_str or task_str == "无当前任务":
-                return task_str
-            # 如果是完整格式 [当前任务] [进度] 任务名称，提取任务名称部分
-            if task_str.startswith("[当前任务]") and "]" in task_str:
-                parts = task_str.split("]", 2)
-                if len(parts) >= 3:
-                    return parts[2].strip()
+        # 获取任务名称的基础部分（去除进度信息）
+        def get_base_task_name(task_str):
+            """从任务字符串中提取基础任务名称（去除进度部分）"""
+            if "无当前任务" in task_str:
+                return "无当前任务"
+            
+            # 如果任务字符串包含进度格式，提取前面的部分
+            progress_patterns = [
+                r'(.+?) \[\d+/\d+\]',
+                r'(.+?) \(\d+/\d+\)',
+                r'(.+?) \d+/\d+个',
+                r'(.+?) 第 \d+/\d+ 次循环'
+            ]
+            
+            for pattern in progress_patterns:
+                match = re.match(pattern, task_str)
+                if match:
+                    return match.group(1).strip()
+            
             return task_str
         
-        current_base_task = get_base_task(self.current_task)
-        new_base_task = get_base_task(new_task)
+        # 只在任务实际变化时记录（排除进度更新）
+        new_base_task = get_base_task_name(new_task)
+        current_base_task = get_base_task_name(self.current_task)
+            
+        # 新增：忽略从"无当前任务"到实际任务的切换（这是正常开始）
+        # 也忽略从实际任务到"无当前任务"的切换（这是正常结束）
+        should_record = False
+        if (new_base_task != current_base_task and 
+            new_base_task != "无当前任务" and 
+            current_base_task != "无当前任务"):
+            # 只有从一个实际任务切换到另一个实际任务才记录
+            should_record = True
+            switch_type = "任务切换"
+        elif new_base_task == "无当前任务" and current_base_task != "无当前任务":
+            # 任务正常结束，不记录为切换
+            switch_type = "任务结束"
+            logging.debug(f"任务正常结束: {current_base_task} -> 无当前任务 (不计入切换)")
+        elif new_base_task != "无当前任务" and current_base_task == "无当前任务":
+            # 任务正常开始，不记录为切换
+            switch_type = "任务开始"
+            logging.debug(f"任务正常开始: 无当前任务 -> {new_base_task} (不计入切换)")
+        else:
+            # 其他情况（如进度更新）
+            switch_type = "进度更新"
         
-        # 只在任务实际变化时记录（忽略进度变化）
-        if new_base_task != current_base_task and new_base_task != "无当前任务":
+        # 只在应该记录时才记录切换
+        if should_record:
+            # 记录详细的任务切换信息
+            task_switch_info = f"{switch_type}: {current_base_task} -> {new_base_task}"
+            
+            # 如果有进度信息，也一并记录
+            if new_task != new_base_task:
+                task_switch_info += f" (进度: {new_task})"
+            
+            logging.info(task_switch_info)
             self.task_switch_times.append(now)
             
             # 清理超过1分钟的记录
             while self.task_switch_times and (now - self.task_switch_times[0] > 60):
-                self.task_switch_times.popleft()
+                removed_time = self.task_switch_times.popleft()
+                logging.debug(f"移除过期切换记录: {removed_time}")
             
-            # 检查1分钟内是否超过4次切换(BUG:好像會重複計數)
-            if len(self.task_switch_times) >= 8:
+            current_switches = len(self.task_switch_times)
+            # 记录当前切换统计
+            if current_switches > 0:
+                logging.debug(f"切换统计: 当前{current_switches}次/分钟")
+            
+            # 检查1分钟内是否超过5次切换
+            if current_switches >= 5:
                 if not self.high_frequency_warning:
                     self.high_frequency_warning = True
                     self.high_frequency_start = now
-                    logging.warning("任务切换过于频繁！检测到 %d 次任务切换/分钟", (len(self.task_switch_times/2)))
-                    # 注意：这里不进行任何可能影响快捷键的操作
+                    logging.warning(f"⚠️ 任务切换过于频繁！检测到 {current_switches} 次任务切换/分钟")
+                    # 输出详细的切换记录
+                    switch_details = []
+                    for i, switch_time in enumerate(self.task_switch_times):
+                        switch_details.append(f"{i+1}. {datetime.fromtimestamp(switch_time).strftime('%H:%M:%S')}")
+                    logging.debug(f"详细切换记录:\n" + "\n".join(switch_details))
+                else:
+                    # 如果已经处于高频警告状态，只记录增加次数
+                    logging.debug(f"继续高频切换，当前 {current_switches} 次/分钟")
             else:
                 # 只有当切换次数真正减少时才取消警告
-                if self.high_frequency_warning and len(self.task_switch_times) < 3:
+                if self.high_frequency_warning and current_switches < 4:
                     self.high_frequency_warning = False
-                    logging.info("高频任务切换状态结束")
-        
-        # 检查高频状态是否已结束（超过1分钟30秒无新警告）
+                    logging.info("✅ 高频任务切换状态结束")
+                    
+            # 输出当前切换队列状态
+            logging.debug(f"切换队列状态: {current_switches} 次记录")
+        # 检查高频状态是否已结束（超过90秒无新警告）
         if self.high_frequency_warning and (now - self.high_frequency_start > 90):
             self.high_frequency_warning = False
-            logging.info("高频任务切换状态自动结束")
+            logging.info("⏰ 高频任务切换状态超时自动结束")
+            
+        # 记录基础任务名称用于调试
+        logging.debug(f"任务基础名称: 当前='{current_base_task}', 新='{new_base_task}', 类型={switch_type}")
             
     def _format_log_line(self, line):
         """格式化日志行 - 移除类名部分，简化显示"""
+        # 确保 line 是字符串
+        if not isinstance(line, str):
+            try:
+                line = str(line)
+            except Exception as e:
+                logging.warning(f"无法格式化非字符串日志行: {type(line)}，错误: {str(e)}")
+                return str(line)
+        
         match = self.log_format_pattern.match(line)
         if match:
             timestamp = match.group(1)
@@ -1052,8 +1173,25 @@ class SmartLogReader:
         return line  # 如果无法匹配，返回原始行
 
     def _extract_progress_info(self, line):
-        """从日志行中提取进度信息 - 支持多种进度格式"""
+        """从日志行中提取进度信息 - 分開處理配置組進度和任務進度"""
+        # 優先匹配配置組進度
+        config_progress_pattern = re.compile(r'(?:一条龙任务执行|配置组任务执行)[：:]\s*(\d+)/(\d+)')
+        config_match = config_progress_pattern.search(line)
+        
+        if config_match:
+            # 這是配置組進度
+            current, total = config_match.groups()
+            return {
+                "type": "config",  # 標記為配置組進度
+                "value": f"{current}/{total}"
+            }
+        
+        # 然後匹配其他任務進度
         for progress_type, pattern in self.progress_patterns.items():
+            # 跳過配置组任务执行进度，因為已經在上面處理過了
+            if progress_type == "配置组任务执行进度":
+                continue
+                
             match = pattern.search(line)
             if match:
                 groups = match.groups()
@@ -1062,64 +1200,92 @@ class SmartLogReader:
                         current, total, task_name = groups[:3]
                         # 缓存这个任务的进度信息
                         self.task_progress[task_name] = f"{current}/{total}"
-                        return f"{current}/{total}"
+                        return {
+                            "type": "task",  # 標記為任務進度
+                            "value": f"{current}/{total}"
+                        }
                     elif progress_type == "当前进度" and len(groups) >= 2:
                         current, total = groups[:2]
-                        return f"{current}/{total}"
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
                     elif progress_type == "采集CD进度" and len(groups) >= 2:
                         current, total = groups[:2]
-                        return f"{current}/{total}"
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
                     elif progress_type == "组任务进度" and len(groups) >= 4:
                         group_num, current, total, task_name = groups[:4]
-                        return f"{current}/{total}"
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
                     # 新增：钓鱼点进度格式
                     elif progress_type == "钓鱼点进度" and len(groups) >= 2:
                         current, total = groups[:2]
-                        return f"{current}/{total}"
-                     # 新增：循环执行进度格式
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
+                    # 新增：循环执行进度格式
                     elif progress_type == "循环执行进度" and len(groups) >= 3:
                         item_name, current, total = groups[:3]
-                        # 对于循环执行，我们可以显示为 "9/56次" 或者直接 "9/56"
-                        return f"{current}/{total}"
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
                     # 修改：产出进度格式 - 处理无目标值的情况
                     elif progress_type == "产出进度":
                         if len(groups) >= 2:
                             current, total = groups[:2]
                             if total is not None:  # 有目标值
-                                return f"{current}/{total}个"
-                            else:  # 无目标值
-                                return f"{current}/∞个"
+                                value = f"{current}/{total}个"
+                            else:  # 無目標值
+                                value = f"{current}/∞个"
+                            return {
+                                "type": "task",
+                                "value": value
+                            }
                         elif len(groups) >= 1 and groups[0] is not None:
                             # 只有当前值，无目标值
-                            return f"{groups[0]}/∞个"
-                    # 修改：运行时间进度格式 - 确保正确处理
+                            return {
+                                "type": "task",
+                                "value": f"{groups[0]}/∞个"
+                            }
+                    # 修改：運行時間進度格式 - 確保正確處理
                     elif progress_type == "运行时间进度" and len(groups) >= 2:
-                        # 礦JS本體做好日志秒數顯示轉換的話
-                        # current_time, total_time = groups[:2]
-                        # return f"{current_time}/{total_time}分钟"  # 添加單位
-
                         current_time, total_time = groups[:2]
-                        # 将小数分钟转换为分钟:秒格式（秒数四舍五入）
+                        # 將小數分鐘轉換為分鐘:秒格式（秒數四捨五入）
                         try:
                             current_minutes = float(current_time)
                             minutes = int(current_minutes)
-                            seconds = round((current_minutes - minutes) * 60)  # 四舍五入到整数秒
+                            seconds = round((current_minutes - minutes) * 60)  # 四捨五入到整數秒
                             
-                            # 处理四舍五入后可能出现60秒的情况
+                            # 處理四捨五入後可能出現60秒的情況
                             if seconds == 60:
                                 minutes += 1
                                 seconds = 0
                                 
-                            # 格式化为 分钟.秒 (秒数显示两位数)
+                            # 格式化為 分鐘.秒 (秒數顯示兩位數)
                             formatted_time = f"{minutes}.{seconds:02d}"
-                            return f"{formatted_time}/{total_time}分钟"
+                            value = f"{formatted_time}/{total_time}分钟"
                         except (ValueError, TypeError):
-                            # 如果转换失败，返回原始格式
-                            return f"{current_time}/{total_time}分钟"
+                            # 如果轉換失敗，返回原始格式
+                            value = f"{current_time}/{total_time}分钟"
+                        
+                        return {
+                            "type": "task",
+                            "value": value
+                        }
                     # 在 _extract_progress_info 方法中更新 F2 的处理逻辑
                     elif progress_type == "F2" and len(groups) >= 2:
                         current, total = groups[:2]
-                        return f"{current}/{total}轮"
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}轮"
+                        }
                 except (ValueError, IndexError) as e:
                     logging.warning(f"进度信息解析失败: {line}, 错误: {e}")
         return None
@@ -1170,55 +1336,69 @@ class SmartLogReader:
         # 使用临时变量存储最新状态
         latest_config = self.current_config
         latest_task = self.current_task
-        latest_progress = self.current_progress
+        latest_progress = self.current_progress  # 任務進度
+        latest_config_progress = self.current_config_progress  # 配置組進度
 
         # 优先搜索进度信息，然后才是任务和配置信息
         progress_found = False
         task_found = False
         config_found = False
+        config_progress_found = False
         
-        # 逆向搜索日志内容 - 从最新日志开始搜索
+        # 逆向搜索日誌內容 - 從最新日誌開始搜索
         for line in reversed(full_content):
-            # 1. 优先搜索进度信息（最重要）
+            # 1. 優先搜索進度信息（最重要）
             if not progress_found:
                 progress_info = self._extract_progress_info(line)
                 if progress_info:
-                    latest_progress = progress_info
+                    progress_type = progress_info.get("type")
+                    progress_value = progress_info.get("value")
+                    
+                    if progress_type == "config":
+                        # 這是配置組進度
+                        latest_config_progress = progress_value
+                        # 配置組進度刷新時，歸零當前任務進度
+                        latest_progress = "0/0"
+                        config_progress_found = True
+                    elif progress_type == "task":
+                        # 這是任務進度
+                        latest_progress = progress_value
+                        
                     progress_found = True
-            
-            # 2. 然后搜索配置信息
+        
+            # 2. 然後搜索配置信息
             if not config_found:
                 if config_match := self.config_pattern.search(line):
                     config_name = config_match.group(1)
-                    # 只更新"加载完成"或"开始执行"的配置组
+                    # 只更新"加載完成"或"開始執行"的配置組
                     if "加载完成" in line or "开始执行" in line:
                         latest_config = config_name
                         config_found = True
             
-            # 3. 最后搜索任务信息
+            # 3. 最後搜索任務信息
             if not task_found:
                 for task_type, pattern in self.task_patterns.items():
                     if match := pattern.search(line):
                         task_name = match.group(1).strip()
                         
-                        # 特殊处理：对于钓鱼点任务，保持完整的任务名称
+                        # 特殊處理：對於釣魚點任務，保持完整的任務名稱
                         if task_type == "钓鱼点":
-                            # 钓鱼点任务名称保持原样，不进行路径和扩展名处理
+                            # 釣魚點任務名稱保持原樣，不進行路徑和擴展名處理
                             latest_task = f"{task_type}: {task_name}"
                         else:
-                            # 其他任务类型：提取纯文件名（不含路径和扩展名）
+                            # 其他任務類型：提取純文件名（不含路徑和擴展名）
                             if '/' in task_name or '\\' in task_name:
-                                # 提取文件名（含扩展名）
+                                # 提取文件名（含擴展名）
                                 base_name = os.path.basename(task_name)
-                                # 移除扩展名，获取纯文件名
+                                # 移除擴展名，獲取純文件名
                                 task_name = os.path.splitext(base_name)[0]
                             elif '.' in task_name:
-                                # 如果只有文件名但包含扩展名，也移除扩展名
+                                # 如果只有文件名但包含擴展名，也移除擴展名
                                 task_name = os.path.splitext(task_name)[0]
                             
                             latest_task = f"{task_type}: {task_name}"
                         task_found = True
-                        break  # 一行通常只匹配一个任务类型
+                        break  # 一行通常只匹配一個任務類型
             
             # 如果所有信息都已找到，提前退出循环
             if progress_found and task_found and config_found:
@@ -1228,6 +1408,7 @@ class SmartLogReader:
         self.current_config = latest_config
         self.current_task = latest_task
         self.current_progress = latest_progress
+        self.current_config_progress = latest_config_progress  # 更新配置組進度
 
         # 检测任务切换频率
         self._detect_task_switching(previous_task)
@@ -1239,8 +1420,8 @@ class SmartLogReader:
         if self.auto_wrap:
             formatted_content = []
             for line in display_content:
-                formatted_line = self._format_log_line(line)
-                wrapped_lines = self._wrap_text_line(formatted_line)
+                formatted_line = self._format_log_line(line)  # 这里会调用我们修改的方法
+                wrapped_lines = self._wrap_text_line(formatted_line)  # 这里会调用我们修改的方法
                 formatted_content.extend(wrapped_lines)
 
             # 重要：换行后可能行数超过 display_lines，需要再次限制
@@ -1278,7 +1459,18 @@ class SmartLogReader:
     
     def _wrap_text_line(self, line):
         """对单行文本进行换行处理"""
-        if not self.auto_wrap or not line.strip():
+        if not self.auto_wrap:
+            return [line]
+        
+        # 确保 line 是字符串
+        if not isinstance(line, str):
+            try:
+                line = str(line)
+            except Exception as e:
+                logging.warning(f"无法将行转换为字符串: {type(line)}，错误: {str(e)}，返回原始行")
+                return [line]
+        
+        if not line.strip():
             return [line]
             
         font = self._get_font()
@@ -1286,11 +1478,11 @@ class SmartLogReader:
             return [line]  # 无法获取字体时返回原行
             
         try:
-             # 计算缩进宽度（两个全角空格）
+            # 计算缩进宽度（两个全角空格）
             indent = "　　"
             indent_width = font.measure(indent)
             # 计算可用宽度（减去边距）
-            available_width = self.max_width - indent_width - 2# 8像素边距
+            available_width = self.max_width - indent_width - 2  # 8像素边距
             
             # 如果整行宽度不超过可用宽度，直接返回
             if font.measure(line) <= available_width:
@@ -1330,7 +1522,7 @@ class SmartLogReader:
                     else:
                         current_line = word
                         
-             # 添加最后一行
+            # 添加最后一行
             if current_line:
                 if is_first_line:
                     wrapped_lines.append(current_line)
@@ -1345,6 +1537,18 @@ class SmartLogReader:
     
     def _wrap_long_word(self, word, wrapped_lines, font, available_width, indent, is_first_line):
         """处理超长单词的字符级分割"""
+        # 确保 word 是字符串
+        if not isinstance(word, str):
+            try:
+                word = str(word)
+            except Exception as e:
+                logging.warning(f"无法将单词转换为字符串: {type(word)}，错误: {str(e)}，跳过分割")
+                if is_first_line:
+                    wrapped_lines.append(str(word))
+                else:
+                    wrapped_lines.append(indent + str(word))
+                return
+        
         current_chunk = ""
         for char in word:
             test_chunk = current_chunk + char
@@ -1371,7 +1575,7 @@ class SmartLogReader:
         if not self.backup_enabled or not self.backup_path:
             logging.info(f"備份功能未啟用: enabled={self.backup_enabled}, path={self.backup_path}")
             return
-            
+        
         try:
             # 確保備份目錄存在
             self.backup_path.mkdir(parents=True, exist_ok=True)
@@ -1448,16 +1652,9 @@ class SmartLogReader:
                 
             # 获取文件名（不包含时间戳）
             file_name = source_file.name
-            # 移除时间戳部分，只保留基础文件名
-            if "_" in file_name and file_name.endswith(".log"):
-                # 处理带序号的文件名：better-genshin-impactYYYYMMDD_001.log
-                base_name = file_name.split("_")[0] + ".log"
-            else:
-                # 处理不带序号的文件名：better-genshin-impactYYYYMMDD.log
-                # 这里我们保留整个文件名，因为日期是文件的一部分
-                base_name = file_name
-                
-            target_file = self.backup_path / base_name
+            # 处理带序号的文件名：better-genshin-impactYYYYMMDD_001.log
+            # 处理不带序号的文件名：better-genshin-impactYYYYMMDD.log
+            target_file = self.backup_path / file_name
             
             # 复制文件
             shutil.copy2(source_file, target_file)
@@ -1526,14 +1723,19 @@ class SmartLogReader:
     def _cleanup_old_backups(self):
         """清理超过指定天数的旧备份文件"""
         if not self.backup_enabled or not self.backup_path:
+            logging.debug("備份功能未啟用或備份路徑為空，跳過清理")
             return
             
         try:
-            # 获取当前日期
+            logging.debug(f"開始清理舊備份文件，備份路徑: {self.backup_path}")
             current_date = datetime.now().date()
+            logging.debug(f"當前日期: {current_date}")
             
-            # 列出备份目录中的所有文件
+            file_count = 0
+            deleted_count = 0
+            
             for file_path in self.backup_path.glob("*.log"):
+                file_count += 1
                 # 尝试从文件名中提取日期
                 date_str = self._extract_date_from_filename(file_path.name)
                 
@@ -1547,6 +1749,7 @@ class SmartLogReader:
                         # 如果超过配置的天数，删除文件
                         if days_diff > self.backup_keep_days:
                             file_path.unlink()
+                            deleted_count += 1
                             logging.info(f"删除旧备份文件: {file_path.name} (创建于 {days_diff} 天前)")
                     except ValueError:
                         # 日期格式不正确，跳过
@@ -1559,13 +1762,15 @@ class SmartLogReader:
                         
                         if days_diff > self.backup_keep_days:
                             file_path.unlink()
+                            deleted_count += 1
                             logging.info(f"删除旧备份文件(按修改时间): {file_path.name} (修改于 {days_diff} 天前)")
                     except Exception:
                         # 无法获取修改时间，跳过
                         continue
+            logging.debug(f"備份清理完成: 檢查了 {file_count} 個文件，刪除了 {deleted_count} 個文件")
                         
         except Exception as e:
-            logging.error(f"清理旧备份文件失败: {str(e)}")
+            logging.error(f"清理舊備份文件失敗: {str(e)}", exc_info=True)  # 添加 exc_info 獲取堆棧信息
     
     def _extract_date_from_filename(self, filename):
         """从文件名中提取日期字符串 (YYYYMMDD 格式)"""
@@ -1711,6 +1916,18 @@ class FloatingLogViewer(tk.Tk):
         # 初始化全局快捷键管理器
         self.shortcut_manager = GlobalShortcutManager(self)
         self.shortcut_manager.start_listening()
+        
+        # 新增：延迟检查快捷键状态，确保备用方案生效
+        self.after(2000, self._check_shortcut_status)  # 2秒后检查
+    
+    def _check_shortcut_status(self):
+        """检查快捷键状态，确保有可用的快捷键方案"""
+        if KEYBOARD_AVAILABLE and not self.shortcut_manager.hotkeys_registered:
+            logging.warning("全局快捷键注册可能被安全软件阻止，强制启用窗口内快捷键")
+            self._setup_keyboard_shortcuts()  # 强制启用窗口内快捷键
+        elif not KEYBOARD_AVAILABLE:
+            logging.info("keyboard库不可用，使用窗口内快捷键")
+            self._setup_keyboard_shortcuts()
 
     def _setup_window(self):
         """窗口视觉配置 - 设置透明、置顶等属性"""
@@ -1856,19 +2073,22 @@ class FloatingLogViewer(tk.Tk):
 
     def _setup_keyboard_shortcuts(self):
         """设置键盘快捷键 - Alt+P关闭程序, Alt+U重置位置（当全局快捷键不可用时启用）"""
-        if not KEYBOARD_AVAILABLE:
-            # 只有全局快捷键不可用时才设置窗口内快捷键
-            self.bind("<Alt-KeyPress-p>", self._on_close_shortcut)
-            self.bind("<Alt-KeyPress-P>", self._on_close_shortcut)
-            self.bind("<Alt-KeyPress-u>", self._on_reset_position_shortcut)
-            self.bind("<Alt-KeyPress-U>", self._on_reset_position_shortcut)
-            self.bind("<Alt-KeyPress-i>", self._on_transparent_toggle_shortcut)
-            self.bind("<Alt-KeyPress-I>", self._on_transparent_toggle_shortcut)
-            self.bind("<Alt-KeyPress-n>", self._on_click_through_toggle_shortcut)
-            self.bind("<Alt-KeyPress-N>", self._on_click_through_toggle_shortcut)
-            logging.info("全局快捷键不可用，已启用窗口内快捷键: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中)")
+        self.bind("<Alt-KeyPress-p>", self._on_close_shortcut)
+        self.bind("<Alt-KeyPress-P>", self._on_close_shortcut)
+        self.bind("<Alt-KeyPress-u>", self._on_reset_position_shortcut)
+        self.bind("<Alt-KeyPress-U>", self._on_reset_position_shortcut)
+        self.bind("<Alt-KeyPress-i>", self._on_transparent_toggle_shortcut)
+        self.bind("<Alt-KeyPress-I>", self._on_transparent_toggle_shortcut)
+        self.bind("<Alt-KeyPress-n>", self._on_click_through_toggle_shortcut)
+        self.bind("<Alt-KeyPress-N>", self._on_click_through_toggle_shortcut)
+        self.bind("<Alt-KeyPress-k>", self._on_second_style_toggle_shortcut)
+        self.bind("<Alt-KeyPress-K>", self._on_second_style_toggle_shortcut)
+            
+        # 簡單的日誌記錄，不依賴於 hotkeys_registered
+        if KEYBOARD_AVAILABLE:
+            logging.info("全局快捷键可用，窗口内快捷键也已設置（備份）")
         else:
-            logging.info("全局快捷键可用，窗口内快捷键已禁用")
+            logging.info("全局快捷键不可用，已启用窗口内快捷键")
             
         self.focus_set()  # 确保窗口能够接收键盘事件
 
@@ -2138,8 +2358,6 @@ class FloatingLogViewer(tk.Tk):
         # 确保窗口完全刷新
         self.update_idletasks()
         self.update()
-        
-        
 
     def _on_reset_position_shortcut(self, event=None):
         """Alt+U 快捷键处理函数 - 重置窗口位置到预设位置"""
@@ -2203,149 +2421,172 @@ class FloatingLogViewer(tk.Tk):
     
     def _update_display(self):
         """更新显示内容 - 核心刷新逻辑"""
-        new_content = self.reader.get_content()
-        current_time = datetime.now()
+        try:
+            new_content = self.reader.get_content()
+            current_time = datetime.now()
 
-        # 初始化变量
-        content_changed = False
-        color_changed = False
-        text_color = self.normal_color  # 默认颜色
+            # 初始化变量
+            content_changed = False
+            color_changed = False
+            text_color = self.normal_color  # 默认颜色
 
-        # 如果返回的是错误信息，直接显示错误信息
-        if new_content and "日志路径配置错误" in new_content[0]:
-            display_content = new_content
-            # 使用用户配置的 stale_color 显示错误信息
-            text_color = self.stale_color
-            content_changed = True  # 错误信息总是需要显示
-            color_changed = True    # 颜色也需要更新
-        else:
-            # 构建显示内容：配置组+任务状态 + 日志内容
-            task_display = f"[当前任务] [{self.reader.current_progress}] {self.reader.current_task}"
-            
-            display_content = [
-                f"[当前配置组] {self.reader.current_config}",
-                task_display
-            ] + new_content
-
-            # 添加高频切换警告状态行
-            if self.reader.high_frequency_warning:
-                display_content.insert(0, f"⚠️ 任务切换过于频繁 ({len(self.reader.task_switch_times)}次/分钟) ⚠️")
-                
-            # 如果启用自动换行，处理状态行的截断
-            if self.config.get("auto_wrap", False):
-                display_content = self._truncate_status_lines(display_content)
-                
-            # 限制最多显示行数
-            max_display_lines = self.display_lines + 2  # 加上2行状态行
-            if len(display_content) > max_display_lines:
-                display_content = display_content[:max_display_lines]
-
-            # 判断是否需要更新
-            stale_seconds = (current_time - self.last_change_time).total_seconds()
-            # 比较日志内容
-            content_hash = self._get_content_hash(display_content)
-            prev_content_hash = self._get_content_hash(self._prev_content)
-            content_changed = content_hash != prev_content_hash
-            
-            # 确定文本颜色（优先级：高频警告 > 超时警告 > 正常）
-            if self.reader.high_frequency_warning:
-                text_color = self.high_freq_color
-            elif stale_seconds > 60:  # 超过60秒无更新显示红色警告
+            # 如果返回的是错误信息，直接显示错误信息
+            if new_content and "日志路径配置错误" in new_content[0]:
+                display_content = new_content
+                # 使用用户配置的 stale_color 显示错误信息
                 text_color = self.stale_color
+                content_changed = True  # 错误信息总是需要显示
+                color_changed = True    # 颜色也需要更新
             else:
-                text_color = self.normal_color
+                # 构建显示内容：配置组 + 任务状态 + 日志内容
+                config_display = f"[当前配置组] [{self.reader.current_config_progress}] {self.reader.current_config}"
+                task_display = f"[当前任务] [{self.reader.current_progress}] {self.reader.current_task}"
                 
-            color_changed = self.text.cget("fg") != text_color
+                display_content = [
+                    config_display,
+                    task_display
+                ] + new_content
 
-            # 如果内容和颜色都未变化，跳过更新（除非是强制更新）
-            if not content_changed and not color_changed and not hasattr(self, '_force_update'):
-                return
+                # 添加高频切换警告状态行
+                if self.reader.high_frequency_warning:
+                    display_content.insert(0, f"⚠️ 任务切换过于频繁 ({len(self.reader.task_switch_times)}次/分钟) ⚠️")
+                    
+                # 如果启用自动换行，处理状态行的截断
+                if self.config.get("auto_wrap", False):
+                    display_content = self._truncate_status_lines(display_content)
+                    
+                # 限制最多显示行数
+                max_display_lines = self.display_lines + 2  # 加上 2 行状态行
+                if len(display_content) > max_display_lines:
+                    display_content = display_content[:max_display_lines]
 
-        # 动态调整窗口宽度
-        self._adjust_window_width(display_content)
+                # 判断是否需要更新
+                stale_seconds = (current_time - self.last_change_time).total_seconds()
+                # 比较日志内容
+                content_hash = self._get_content_hash(display_content)
+                prev_content_hash = self._get_content_hash(self._prev_content)
+                content_changed = content_hash != prev_content_hash
+                
+                # 确定文本颜色（优先级：高频警告 > 超时警告 > 正常）
+                if self.reader.high_frequency_warning:
+                    text_color = self.high_freq_color
+                elif stale_seconds > 60:  # 超过 60 秒无更新显示红色警告
+                    text_color = self.stale_color
+                else:
+                    text_color = self.normal_color
+                    
+                color_changed = self.text.cget("fg") != text_color
 
-        # 执行界面更新
-        self.text.config(state=tk.NORMAL)
-        self.text.delete(1.0, tk.END)
-        self.text.insert(tk.END, '\n'.join(display_content))
-        self.text.config(fg=text_color)
+                # 如果内容和颜色都未变化，跳过更新（除非是强制更新）
+                if not content_changed and not color_changed and not hasattr(self, '_force_update'):
+                    return
 
-        # 根据状态行数动态计算索引
-        if not (display_content and "日志路径配置错误" in display_content[0]):
-            # 动态计算状态行数
-            status_lines = 2
-            if self.reader.high_frequency_warning:
-                status_lines = 3
-            
-            # 获取分开的状态行和任务行颜色 - 从当前配置中获取最新值
-            status_color = self.config.get("status_header_color", "#87CEFA")
-            task_color = self.config.get("task_header_color", "#87CEFA")
-            
-            # 获取当前字体配置 - 从当前配置中获取最新值
-            font_name = self.config.get("font_name", "Consolas")
-            font_size = self.config.get("font_size", 10)
-            font_weight = self.config.get("font_weight", "bold")
-            
-            # 配置字体样式 - 使用从配置中获取的最新值
-            status_font_config = (font_name, font_size, font_weight)
-            task_font_config = (font_name, font_size, font_weight)
-            # 删除现有标签（确保样式切换时标签被清除）
-            self.text.tag_delete("config_header")
-            self.text.tag_delete("task_header")
-            self.text.tag_delete("high_freq_warning")
-            
-            # 配置组行特殊样式 - 使用当前配置的状态行颜色和字体
-            config_line = 1 if status_lines == 2 else 2
-            self.text.tag_configure("config_header", 
-                                foreground=status_color,
-                                font=status_font_config)
-            self.text.tag_add("config_header", f"{config_line}.0", f"{config_line}.end")
-            
-            # 任务行样式 - 使用当前配置的任务行颜色和字体
-            task_line = 2 if status_lines == 2 else 3
-            self.text.tag_configure("task_header", 
-                                foreground=task_color,
-                                font=task_font_config,
-                                relief=tk.RIDGE,
-                                borderwidth=2)
-            self.text.tag_add("task_header", f"{task_line}.0", f"{task_line}.end")
-            
-            # 高频警告行样式
-            if self.reader.high_frequency_warning:
-                self.text.tag_configure("high_freq_warning", 
-                                    foreground=self.high_freq_color,
-                                    font=(font_name, font_size, font_weight))
-                self.text.tag_add("high_freq_warning", "1.0", "1.end")
+            # 动态调整窗口宽度
+            self._adjust_window_width(display_content)
 
-        # 重新禁用编辑
-        self.text.config(state='disabled')
+            # 执行界面更新
+            self.text.config(state=tk.NORMAL)
+            self.text.delete(1.0, tk.END)
+            self.text.insert(tk.END, '\n'.join(display_content))
+            self.text.config(fg=text_color)
 
-        # 更新状态记录
-        if content_changed:
-            self.last_change_time = current_time
-            self._prev_content = display_content
+            # 根据状态行数动态计算索引
+            if not (display_content and "日志路径配置错误" in display_content[0]):
+                # 动态计算状态行数
+                status_lines = 2
+                if self.reader.high_frequency_warning:
+                    status_lines = 3
+                
+                # 获取状态行和任务行颜色 - 从当前配置中获取最新值
+                status_color = self.config.get("status_header_color", "#87CEFA")
+                task_color = self.config.get("task_header_color", "#87CEFA")
+                
+                # 获取当前字体配置
+                font_name = self.config.get("font_name", "Consolas")
+                font_size = self.config.get("font_size", 10)
+                font_weight = self.config.get("font_weight", "bold")
+                
+                # 配置字体样式
+                status_font_config = (font_name, font_size, font_weight)
+                task_font_config = (font_name, font_size, font_weight)
+                # 删除现有标签（确保样式切换时标签被清除）
+                self.text.tag_delete("config_header")
+                self.text.tag_delete("task_header")
+                self.text.tag_delete("high_freq_warning")
+                
+                # 配置组行样式
+                config_line = 1 if status_lines == 2 else 2
+                self.text.tag_configure(
+                    "config_header",
+                    foreground=status_color,
+                    font=status_font_config
+                )
+                self.text.tag_add("config_header", f"{config_line}.0", f"{config_line}.end")
+                
+                # 任务行样式
+                task_line = 2 if status_lines == 2 else 3
+                self.text.tag_configure(
+                    "task_header",
+                    foreground=task_color,
+                    font=task_font_config,
+                    relief=tk.RIDGE,
+                    borderwidth=2
+                )
+                self.text.tag_add("task_header", f"{task_line}.0", f"{task_line}.end")
+                
+                # 高频警告行样式
+                if self.reader.high_frequency_warning:
+                    self.text.tag_configure(
+                        "high_freq_warning",
+                        foreground=self.high_freq_color,
+                        font=(font_name, font_size, font_weight)
+                    )
+                    self.text.tag_add("high_freq_warning", "1.0", "1.end")
+
+            # 重新禁用编辑
+            self.text.config(state='disabled')
+
+            # 更新状态记录
+            if content_changed:
+                self.last_change_time = current_time
+                self._prev_content = display_content
+                
+            # 清除强制更新标志
+            if hasattr(self, '_force_update'):
+                delattr(self, '_force_update')
+                
+            # 动态调整窗口高度
+            if self.dynamic_height:
+                try:
+                    total_lines = int(self.text.index('end-1c').split('.')[0])
+                    line_height = tkfont.Font(font=self.text['font']).metrics('linespace')
+                    max_lines = self.display_lines + 2
+                    # new_height = self.max_height
+                    
+                    new_height = min(total_lines, max_lines) * line_height
+                    new_height = min(new_height, self.max_height)  # 限制不能超过 max_height
+
+                    current_x = self.winfo_x()
+                    current_y = self.winfo_y()
+                    self.geometry(f"{self.current_width}x{int(new_height)}+{current_x}+{current_y}")
+                except Exception as e:
+                    logging.error(f"动态调整窗口高度失败: {str(e)}")
+                    
+        except Exception as e:
+            # 记录详细的错误信息
+            import traceback
+            error_details = traceback.format_exc()
+            logging.critical(f"更新显示时发生错误: {str(e)}")
+            logging.critical(f"错误详情:\n{error_details}")
             
-        # 清除强制更新标志
-        if hasattr(self, '_force_update'):
-            delattr(self, '_force_update')
-            
-            
-        # 动态调整窗口高度
-        if self.dynamic_height:
+           # 尝试显示错误信息
             try:
-                total_lines = int(self.text.index('end-1c').split('.')[0])
-                line_height = tkfont.Font(font=self.text['font']).metrics('linespace')
-                max_lines =  self.display_lines+2
-                new_height = self.max_height
-                
-                new_height = min(total_lines, max_lines) * line_height
-                new_height = min(new_height, self.max_height)  # 限制不能超过 max_height
-
-                current_x = self.winfo_x()
-                current_y = self.winfo_y()
-                self.geometry(f"{self.current_width}x{int(new_height)}+{current_x}+{current_y}")
-            except Exception as e:
-                logging.error(f"动态调整窗口高度失败: {str(e)}")
+                self.text.config(state=tk.NORMAL)
+                self.text.delete(1.0, tk.END)
+                self.text.insert(tk.END, f"错误: {str(e)}\n请检查日志获取详细信息")
+                self.text.config(state='disabled')
+            except:
+                pass
 
     def _truncate_status_lines(self, content):
         """截断状态行，确保不换行"""
@@ -2374,8 +2615,8 @@ class FloatingLogViewer(tk.Tk):
         return truncated_content
 
     def _adjust_window_width(self, content):
-        """根据内容动态调整窗口尺寸 - 自适应宽度"""
-        # 如果启用自动换行，固定宽度为 max_width
+        """根據內容動態調整窗口尺寸 - 自適應寬度"""
+        # 如果啟用自動換行，固定寬度為 max_width
         if self.config.get("auto_wrap", False):
             new_width = self.max_width
             if new_width != self.current_width:
@@ -2384,48 +2625,62 @@ class FloatingLogViewer(tk.Tk):
                 current_y = self.winfo_y()
                 self.geometry(f"{new_width}x{self.max_height}+{current_x}+{current_y}")
             return
+        
         if not content:
             return
+        
         try:
-            # 使用字体缓存优化性能
+            # 使用字體緩存優化性能
             current_font_config = self.text['font']
             
-            # 检查字体配置是否发生变化
+            # 檢查字體配置是否發生變化
             if (self._font_cache is None or 
                 self._last_font_config != current_font_config):
                 
                 self._font_cache = tkfont.Font(font=current_font_config)
                 self._last_font_config = current_font_config
-                logging.debug("字体缓存已更新")
+                logging.debug("字體緩存已更新")
             
             font = self._font_cache
             max_width = 0
             
-            # 计算每行文本的像素宽度
+            # 計算每行文本的像素寬度
             for line in content:
-                line_width = font.measure(line)
-                if line_width > max_width:
-                    max_width = line_width
+                try:
+                    # 確保 measure 返回數值
+                    line_width = float(font.measure(line))
+                    if line_width > max_width:
+                        max_width = line_width
+                except (ValueError, TypeError) as e:
+                    logging.warning(f"寬度計算失敗，行: {line[:50]}..., 錯誤: {str(e)}")
+                    # 使用字符數估算
+                    estimated_width = len(line) * 8  # 假設每個字符8像素
+                    if estimated_width > max_width:
+                        max_width = estimated_width
             
-            # 添加边距（左右各4像素）
-            max_width += 2# 8像素边距
+            # 添加邊距（左右各4像素）
+            max_width += 8
             
-            # 应用宽度限制（使用max_width作为最大宽度）
-            max_width = min(max_width, self.max_width)
+            # 應用寬度限制（使用max_width作為最大寬度）
+            try:
+                config_max_width = float(self.max_width)
+                max_width = min(max_width, config_max_width)
+            except (ValueError, TypeError):
+                # 如果轉換失敗，使用默認值
+                max_width = min(max_width, 460)
                 
-            # 检查是否需要调整宽度
+            # 檢查是否需要調整寬度
             if max_width != self.current_width:
-                self.current_width = max_width
+                self.current_width = int(max_width)
                 
-                # 使用当前窗口位置，而不是初始位置
+                # 使用當前窗口位置，而不是初始位置
                 current_x = self.winfo_x()
                 current_y = self.winfo_y()
-                self.geometry(f"{max_width}x{self.max_height}+{current_x}+{current_y}")
+                self.geometry(f"{int(max_width)}x{self.max_height}+{current_x}+{current_y}")
 
         except Exception as e:
-            logging.error(f"宽度计算失败: {str(e)}")
+            logging.error(f"寬度計算失敗: {str(e)}")
             self._fallback_width_calculation(content)
-
 
     def _fallback_width_calculation(self, content):
         """回退的宽度计算方法（当主要方法失败时使用）"""
@@ -2442,7 +2697,12 @@ class FloatingLogViewer(tk.Tk):
 
     def destroy(self):
         """安全关闭程序 - 保存窗口位置和状态到config.txt"""
-        
+        # 清理字體緩存
+        if hasattr(self, '_font_cache'):
+            self._font_cache = None
+        if hasattr(self.reader, '_font_cache'):
+            self.reader._font_cache = None
+            
         # 停止日志备份功能
         if hasattr(self, 'reader') and hasattr(self.reader, 'stop_backup'):
             self.reader.stop_backup()
@@ -2478,11 +2738,10 @@ if __name__ == "__main__":
         viewer.mainloop()
     except Exception as e:
         logging.critical(f"程序崩溃: {str(e)}")
-        # 确保在崩溃时也清理全局快捷键
-        if KEYBOARD_AVAILABLE:
+        # 使用頂部導入的 KEYBOARD_MODULE，避免重複導入
+        if KEYBOARD_AVAILABLE and KEYBOARD_MODULE is not None:
             try:
-                import keyboard
-                keyboard.unhook_all()
+                KEYBOARD_MODULE.unhook_all()  # 使用保存的模組引用
                 logging.info("程序崩溃时清理全局快捷键")
-            except:
-                pass
+            except Exception as cleanup_error:
+                logging.warning(f"清理快捷键时发生错误: {cleanup_error}")
