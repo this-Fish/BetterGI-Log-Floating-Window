@@ -1,4 +1,4 @@
-BetterGI日志悬浮窗_v1.3.8/
+BetterGI日志悬浮窗_v1.3.9/
 ├── BetterGI日志悬浮窗.exe
 ├── config.txt
 ├── main.py

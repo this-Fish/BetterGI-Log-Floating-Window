@@ -1,16 +1,11 @@
-### 1.3.8
-# - 修复 换行处理函数的数据异常 导致 日志内容不刷新
-# - 修复 更改进度被错误计入高频切换
-# - 显示一条龙运行进度 
-#   - 一条龙/配置组任务执行
-#   - (一条龙的任务关键词过少，检测不了不能更新配置组名)
-# - 其他优化
-#    - 备份功能 备份时 保留序号
-#      - better-genshin-impactYYYYMMDD_001.log
-#    - 补充 Alt+K 的窗口内快捷键
-#    - 重复的安全检查（防御性编程）
-#    - 多层的异常处理
-#    - 兼容性快捷键备用方案
+### 1.3.9
+# - 調整地图任务&JS脚本 的正則表達式
+# - 任務名稱適配顯示 
+#  - → 开始执行键鼠脚本:
+#  - 關去 当前钓鱼点:\s*([^\n]+)
+#   - 對應JS : AutoFishingTeyvat 2.3.8修改
+# - 改進文件讀取
+# - 避免任務名稱錯誤、錯誤計入高頻切換
 
 __author__ = "蜜柑魚"
 
@@ -786,10 +781,13 @@ class SmartLogReader:
 
         # 任务检测正则表达式 - 匹配不同类型的任务
         self.task_patterns = {
-            "JS脚本": re.compile(r'→ 开始执行JS脚本: "(.+?)"'),
+            # "JS脚本": re.compile(r'→ 开始执行JS脚本: "(.+?)"'),
+            "JS脚本": re.compile(r'→ 开始执行JS脚本: "([^"]+)"'),
             "配置文件": re.compile(r'assets/(.+?\.json)'),
-            "地图任务": re.compile(r'→ 开始执行(?:地图|路径)追踪任务: "(.+?)"'),
-            "钓鱼点": re.compile(r'当前钓鱼点:\s*([^\n]+)'),
+            # "地图任务": re.compile(r'→ 开始执行(?:地图|路径)追踪任务: "(.+?)"'),
+            "地图任务": re.compile(r'→ 开始执行(?:地图|路径)追踪任务: "([^"]+)"'),
+            # "钓鱼点": re.compile(r'当前钓鱼点:\s*([^\n]+)'),
+            "键鼠脚本": re.compile(r'→ 开始执行键鼠脚本: "([^"]+)"'),
         }
         
         # 配置组正则表达式
@@ -1001,7 +999,7 @@ class SmartLogReader:
         return bool(re.match(r'\[\d{2}:\d{2}:\d{2}\.\d{3}\]', line))
 
     def _tail_lines(self, lines=50):
-        """高效获取文件尾部内容 - 优化大文件处理性能"""
+        """高效获取文件尾部内容 - 确保读取完整的行"""
         if not self.log_path_valid or not self._current_file or not self._current_file.exists():
             return None
 
@@ -1010,25 +1008,42 @@ class SmartLogReader:
                 f.seek(0, 2)  # 移动到文件末尾
                 file_size = f.tell()
                 block_size = 1024
-                data = []
+                buffer = b''
                 lines_found = 0
-
-                # 逆向块读取 - 从文件末尾向前读取
+                
+                # 从文件末尾向前读取，直到收集到足够的行
                 while lines_found < lines and file_size > 0:
+                    # 计算要读取的位置和大小
                     read_size = min(block_size, file_size)
                     file_size -= read_size
                     f.seek(file_size)
-                    block = f.read(read_size)
-                    decoded = block.decode('utf-8', 'ignore')
                     
-                    # 过滤空行并统计
-                    non_empty_lines = [line for line in decoded.split('\n') if line.strip()]
-                    lines_found += len(non_empty_lines)
-                    data.append('\n'.join(non_empty_lines))
+                    # 读取数据并添加到缓冲区前面
+                    chunk = f.read(read_size)
+                    buffer = chunk + buffer
+                    
+                    # 计算缓冲区中的行数
+                    lines_found = buffer.count(b'\n')
+                    
+                    # 如果缓冲区太长，丢弃最早的部分
+                    if lines_found > lines * 2:  # 保留一些额外行作为缓冲
+                        # 找到第N个换行符之后的位置
+                        lines_to_keep = lines * 2
+                        pos = 0
+                        for _ in range(lines_to_keep):
+                            pos = buffer.find(b'\n', pos) + 1
+                            if pos == 0:  # 没找到
+                                break
+                        if pos > 0:
+                            buffer = buffer[pos:]
 
-                # 合并处理结果 - 保持原始顺序（旧在上，新在下）
-                text = ''.join(reversed(data)).splitlines()
-                return text[-lines:]  # 返回最后lines行
+                # 解码并分割为行
+                text = buffer.decode('utf-8', 'ignore')
+                all_lines = text.splitlines()
+                
+                # 返回最后lines行，如果不足则返回全部
+                return all_lines[-min(lines, len(all_lines)):]
+                
         except Exception as e:
             logging.error(f"文件读取错误: {str(e)}")
             return None
@@ -1291,6 +1306,7 @@ class SmartLogReader:
         return None
 
     def get_content(self):
+    
         """安全获取日志内容 - 主入口方法"""
         # 如果日志路径无效，返回错误信息
         if not self.log_path_valid:
@@ -1298,6 +1314,9 @@ class SmartLogReader:
                     "1. 打开 config.txt 文件", "2. 找到 log_path 配置项", 
                     "3. 取消注释并设置正确的路径", "4. 保存配置文件后重启程序", "",
                     "详细说明请查看 README.md", "", "按 Alt+P 关闭程序"]
+        
+        """獲取日誌內容時增加延遲，避免讀取部分寫入的內容"""
+        time.sleep(0.05)  # 50ms 延遲，確保日誌寫入完成
         
         # 检查日期变更和文件更新
         self._detect_date_change()
@@ -1360,11 +1379,12 @@ class SmartLogReader:
                         # 配置組進度刷新時，歸零當前任務進度
                         latest_progress = "0/0"
                         config_progress_found = True
+                        progress_found = True
                     elif progress_type == "task":
-                        # 這是任務進度
-                        latest_progress = progress_value
-                        
-                    progress_found = True
+                        # 這是任務進度，只有在沒有找到配置組進度時才記錄
+                        if not config_progress_found:
+                            latest_progress = progress_value
+                            progress_found = True
         
             # 2. 然後搜索配置信息
             if not config_found:
