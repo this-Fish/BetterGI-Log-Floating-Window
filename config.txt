@@ -26,7 +26,7 @@ dynamic_height=true
 # 备份配置
 # -----------------
 # 备份目录路径（留空则不备份，设置路径会自动启用备份功能）
-# backup_path=S:\我的雲端硬碟\BGI_log
+# backup_path=X:\我的雲端硬碟\BGI_log
 # backup_path=
 # 备份间隔（分钟），默认30
 backup_interval=30
@@ -52,6 +52,15 @@ stale_color=#FF0000
 
 # 高频切换警告文字颜色
 high_freq_color=#FFA500
+
+# DBG级别日志文字颜色
+debug_color=#87CEEB
+
+# ERR级别日志文字颜色
+error_color=#FF6B6B
+
+# WRN级别日志文字颜色
+warning_color=#FFD700
 
 # 状态行标题颜色（配置组行）
 status_header_color=#87CEFA
@@ -100,6 +109,15 @@ style2_stale_color=#FFFFFF
 
 # 第二样式高频警告文字颜色
 style2_high_freq_color=#FFFFFF
+
+# 第二样式DBG级别日志文字颜色
+style2_debug_color=#87CEEB
+
+# 第二样式ERR级别日志文字颜色
+style2_error_color=#FF6B6B
+
+# 第二样式WRN级别日志文字颜色
+style2_warning_color=#FFD700
 
 # 第二样式状态行标题颜色
 style2_status_header_color=#00FF00
