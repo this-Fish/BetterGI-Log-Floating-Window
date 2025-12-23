@@ -1,4 +1,13 @@
-### 1.4.0
+# ### 1.4.0 
+# - **新增**：P键暂时停用小窗功能
+#   - 窗口内按下P键，暂停日志刷新与缩小面板 或 恢复正常显示
+#   - P键只在窗口内生效，不影响其他程序
+# - **新增**：DBG/ERR/WRN日志级别颜色区分
+#   - DBG级别日志显示为浅蓝色（可自定义）
+#   - ERR级别日志显示为浅红色（可自定义）
+#   - WRN级别日志显示为浅黄色（可自定义）
+#   - 所有颜色均可通过配置文件自定义
+# - **改进**：配置文件添加日志级别颜色配置项
 
 __author__ = "蜜柑魚"
 
@@ -80,6 +89,9 @@ class ConfigLoader:
             "normal_color": "#00FF00",# 正常状态文字颜色
             "stale_color": "#FF0000", # 超时警告颜色
             "high_freq_color": "#FFA500", # 高频切换警告颜色
+             "debug_color": "#87CEEB",  # DBG级别日志颜色（浅蓝色）
+            "error_color": "#FF6B6B",  # ERR级别日志颜色（浅红色）
+            "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#87CEFA",  # 状态行标题颜色（配置组行）
             "task_header_color": "#87CEFA",    # 任务行标题颜色
             "font_name": "Consolas",  # 字体名称
@@ -107,6 +119,9 @@ class ConfigLoader:
             "normal_color": "#FFFFFF",
             "stale_color": "#FFFFFF",
             "high_freq_color": "#FFFFFF",
+            "debug_color": "#87CEEB",  # DBG级别日志颜色（浅蓝色）
+            "error_color": "#FF6B6B",  # ERR级别日志颜色（浅红色）
+            "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#00FF00",  # 第二样式的状态行颜色
             "task_header_color": "#00FFFF",   # 第二样式的任务行颜色
             "font_name": "Consolas",
@@ -524,7 +539,7 @@ class GlobalShortcutManager:
                 keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
                 
                 self.hotkeys_registered = True
-                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式)")
+                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), P(隐藏/显示)")
                 return True
                 
             except Exception as register_error:
@@ -686,6 +701,8 @@ class GlobalShortcutManager:
                 self.root._on_click_through_toggle_shortcut()
             elif event == 'toggle_second_style':
                 self.root._on_second_style_toggle_shortcut()
+            elif event == 'toggle_visibility':  # 新增：处理隐藏/显示事件
+                self.root._on_toggle_visibility_shortcut()
                 
         except Exception as e:
             logging.error(f"处理快捷键事件失败: {str(e)}")
@@ -1865,6 +1882,9 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = config.get("normal_color", "#00FF00")
         self.stale_color = config.get("stale_color", "#FF0000")
         self.high_freq_color = config.get("high_freq_color", "#FFA500")
+        self.debug_color = config.get("debug_color", "#87CEEB")  # 新增
+        self.error_color = config.get("error_color", "#FF6B6B")  # 新增
+        self.warning_color = config.get("warning_color", "#FFD700")  # 新增
         
         # 性能优化：字体缓存
         self._font_cache = None
@@ -1879,6 +1899,10 @@ class FloatingLogViewer(tk.Tk):
         self.transparent_mode = config.get("transparent_mode", False)  # 从配置读取透明模式状态
         self.click_through = config.get("click_through", False)  # 从配置读取不可选中模式状态
         self.author_style2_active = config.get("author_style2", False)  # 从配置读取仿BGI日志窗口样式状态
+        
+        # 新增：窗口隐藏状态
+        self.is_hidden = False  # 窗口是否隐藏
+        self.hidden_message = "日志悬浮窗 - 停用中"  # 隐藏时显示的文字
         
         # 窗口配置 - 使用保存的位置，如果 window_x/window_y 为 None 则使用 initial_x/initial_y
         self.preset_x = config.get("initial_x", 0)
@@ -2096,6 +2120,9 @@ class FloatingLogViewer(tk.Tk):
         self.bind("<Alt-KeyPress-N>", self._on_click_through_toggle_shortcut)
         self.bind("<Alt-KeyPress-k>", self._on_second_style_toggle_shortcut)
         self.bind("<Alt-KeyPress-K>", self._on_second_style_toggle_shortcut)
+        # 新增：P键隐藏/显示窗口（只在窗口内生效）
+        self.bind("<KeyPress-p>", self._on_toggle_visibility_shortcut)
+        self.bind("<KeyPress-P>", self._on_toggle_visibility_shortcut)
             
         # 簡單的日誌記錄，不依賴於 hotkeys_registered
         if KEYBOARD_AVAILABLE:
@@ -2104,6 +2131,183 @@ class FloatingLogViewer(tk.Tk):
             logging.info("全局快捷键不可用，已启用窗口内快捷键")
             
         self.focus_set()  # 确保窗口能够接收键盘事件
+
+    def _on_toggle_visibility_shortcut(self, event=None):
+        """P键快捷键处理函数 - 切换窗口显示/隐藏"""
+        try:
+            if self.is_hidden:
+                # 如果窗口是隐藏状态，恢复正常显示
+                self._restore_normal_display()
+            else:
+                # 如果窗口是正常显示状态，切换到隐藏状态
+                self._switch_to_hidden_state()
+                
+        except Exception as e:
+            logging.error(f"切换窗口显示/隐藏失败: {str(e)}")
+            
+    def _switch_to_hidden_state(self):
+        """切换到隐藏状态"""
+        self.is_hidden = True
+        logging.info("进入隐藏状态 - 日志悬浮窗停用中")
+        
+        # 停止自动刷新（但仍然在后台运行备份功能）
+        self._stop_auto_refresh()
+        
+        # 保存当前窗口位置和大小
+        self.normal_window_geometry = self.geometry()
+        
+        # 保存当前窗口样式状态，以便恢复时使用
+        self.normal_bg_color = self.text.cget("bg")
+        self.normal_fg_color = self.text.cget("fg")
+        self.normal_window_alpha = self.attributes('-alpha')
+        self.normal_transparentcolor = self.attributes('-transparentcolor')
+        self.normal_font_config = self.text.cget("font")  # 保存当前字体配置
+        
+        # 设置隐藏状态样式：黑色背景、红色文字、不透明、固定字体15
+        hidden_bg_color = "#000000"  # 黑色背景
+        hidden_fg_color = "#FF0000"  # 红色文字
+        hidden_font_size = 15  # 固定字体大小15
+        
+        # 获取当前字体名称和粗细
+        font_name = self.config.get("font_name", "Consolas")
+        font_weight = self.config.get("font_weight", "bold")
+        
+        # 设置隐藏状态字体配置
+        if font_weight != "normal":
+            self.hidden_font_config = (font_name, hidden_font_size, font_weight)
+        else:
+            self.hidden_font_config = (font_name, hidden_font_size)
+        
+        # 设置窗口不透明
+        self.attributes('-alpha', 1.0)
+        self.attributes('-transparentcolor', '')
+        
+        # 设置窗口背景色
+        self.configure(bg=hidden_bg_color)
+        
+        # 清空文本显示区域
+        self.text.config(state=tk.NORMAL)
+        self.text.delete(1.0, tk.END)
+        
+        # 设置文本组件样式
+        self.text.config(
+            bg=hidden_bg_color,
+            fg=hidden_fg_color,
+            font=self.hidden_font_config  # 使用固定字体15
+        )
+        
+        # 配置居中标签
+        self.text.tag_configure("center", justify='center')
+
+        # 显示停用信息并居中
+        self.text.insert(tk.END, self.hidden_message, "center")
+        self.text.config(state='disabled')
+        
+        # 调整窗口大小以适应停用信息（使用字体15计算）
+        self._adjust_window_for_hidden_state()
+        
+        # 更新窗口标题
+        self.title("BetterGI日志悬浮窗 - 停用中")
+        
+    def _stop_auto_refresh(self):
+        """停止自动刷新（但仍然运行备份功能）"""
+        self.monitor_running = False
+
+
+    def _restore_normal_display(self):
+        """恢复正常显示"""
+        self.is_hidden = False
+        logging.info("恢复正常显示状态")
+        
+        # 恢复自动刷新
+        self._start_auto_refresh()
+        
+        # 恢复窗口大小和位置
+        if hasattr(self, 'normal_window_geometry'):
+            self.geometry(self.normal_window_geometry)
+            
+        # 删除居中标签
+        if "center" in self.text.tag_names():
+            self.text.tag_delete("center")
+        
+        # 恢复窗口样式状态
+        if hasattr(self, 'normal_bg_color'):
+            # 恢复背景色
+            self.configure(bg=self.normal_bg_color)
+            self.text.config(bg=self.normal_bg_color)
+        
+        if hasattr(self, 'normal_fg_color'):
+            # 恢复文字颜色
+            self.text.config(fg=self.normal_fg_color)
+        
+        # 恢复字体配置
+        if hasattr(self, 'normal_font_config'):
+            self.text.config(font=self.normal_font_config)
+        
+        # 恢复透明设置
+        if hasattr(self, 'normal_window_alpha'):
+            if self.transparent_mode:
+                # 如果是透明模式，使用透明设置
+                bg_color = self.config.get("bg_color", "#000000")
+                self.configure(bg=bg_color)
+                self.attributes('-alpha', 1.0)
+                self.attributes('-transparentcolor', bg_color)
+                self.text.config(bg=bg_color)
+            else:
+                # 如果是正常模式
+                self.attributes('-transparentcolor', '')
+                self.attributes('-alpha', self.normal_window_alpha)
+        
+        # 恢复窗口标题
+        self.title("BetterGI日志悬浮窗")
+        
+        # 立即更新显示
+        self._force_immediate_display_update()
+        
+        # 清理保存的样式变量
+        if hasattr(self, 'normal_bg_color'):
+            del self.normal_bg_color
+        if hasattr(self, 'normal_fg_color'):
+            del self.normal_fg_color
+        if hasattr(self, 'normal_window_alpha'):
+            del self.normal_window_alpha
+        if hasattr(self, 'normal_transparentcolor'):
+            del self.normal_transparentcolor
+        if hasattr(self, 'normal_font_config'):
+            del self.normal_font_config
+        if hasattr(self, 'hidden_font_config'):
+            del self.hidden_font_config
+
+    def _adjust_window_for_hidden_state(self):
+        """调整窗口大小以适应隐藏状态（使用字体15计算）"""
+        try:
+            # 计算停用信息的宽度（使用固定字体15）
+            font_name = self.config.get("font_name", "Consolas")
+            font_size = 15  # 固定字体大小15
+            
+            # 创建临时字体计算宽度
+            temp_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
+            text_width = temp_font.measure(self.hidden_message)
+            
+            # 加上边距（左右各30像素）
+            window_width = min(text_width + 40, 300)  # 最大不超过400像素
+            
+            # 固定高度为一行的高度加上边距
+            line_height = temp_font.metrics('linespace')
+            window_height = line_height + 20  # 一行高度加边距
+            
+            # 保持当前位置
+            current_x = self.winfo_x()
+            current_y = self.winfo_y()
+            
+            # 设置新的大小
+            self.geometry(f"{window_width}x{window_height}+{current_x}+{current_y}")
+            
+        except Exception as e:
+            logging.error(f"调整隐藏状态窗口大小失败: {str(e)}")
+            # 使用默认大小（足够显示文字）
+            self.geometry(f"300x50+{self.winfo_x()}+{self.winfo_y()}")
+
 
     def _on_transparent_toggle_shortcut(self, event=None):
         """Alt+I 快捷键处理函数 - 切换透明背景模式"""
@@ -2271,6 +2475,9 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = self.config.get("normal_color", "#00FF00")
         self.stale_color = self.config.get("stale_color", "#FF0000")
         self.high_freq_color = self.config.get("high_freq_color", "#FFA500")
+        self.debug_color = self.config.get("debug_color", "#87CEEB")  # 新增
+        self.error_color = self.config.get("error_color", "#FF6B6B")  # 新增
+        self.warning_color = self.config.get("warning_color", "#FFD700")  # 新增
         
         # 更新窗口属性 - 使用max_width和max_height
         self.max_width = self.config.get("max_width", 460)
@@ -2398,11 +2605,14 @@ class FloatingLogViewer(tk.Tk):
             self.drag_start_pos = {'x': event.x_root, 'y': event.y_root}
 
     def _start_auto_refresh(self):
-        """启动自动刷新循环 - 定时更新日志显示"""
+        """启动自动刷新"""
+        self.monitor_running = True
+        # 重新启动自动刷新循环
         def update_loop():
             try:
                 self._update_display()
-                self.after(self.refresh_interval, update_loop)
+                if self.monitor_running:
+                    self.after(self.refresh_interval, update_loop)
             except Exception as e:
                 logging.critical(f"刷新循环异常: {str(e)}")
 
@@ -2435,6 +2645,18 @@ class FloatingLogViewer(tk.Tk):
     def _update_display(self):
         """更新显示内容 - 核心刷新逻辑"""
         try:
+            # 如果窗口是隐藏状态，只进行必要的后台处理但不更新显示
+            if self.is_hidden:
+                # 仍然获取日志内容以确保备份功能正常运行
+                # 但不更新显示界面
+                try:
+                    # 获取日志内容但不显示
+                    new_content = self.reader.get_content()
+                    # 备份功能会在 reader 内部自动运行
+                except Exception as e:
+                    logging.debug(f"隐藏状态下获取日志内容时出错（正常继续）: {str(e)}")
+                return
+            
             new_content = self.reader.get_content()
             current_time = datetime.now()
 
@@ -2500,8 +2722,14 @@ class FloatingLogViewer(tk.Tk):
             # 执行界面更新
             self.text.config(state=tk.NORMAL)
             self.text.delete(1.0, tk.END)
+            # 插入所有行
             self.text.insert(tk.END, '\n'.join(display_content))
+            # 设置基本文本颜色
             self.text.config(fg=text_color)
+            
+            # 为DBG日志行添加特殊颜色
+            if text_color == self.normal_color:  # 只在正常颜色模式下应用debug颜色
+                self._apply_log_level_colors(display_content)
 
             # 根据状态行数动态计算索引
             if not (display_content and "日志路径配置错误" in display_content[0]):
@@ -2601,6 +2829,45 @@ class FloatingLogViewer(tk.Tk):
             except:
                 pass
 
+    def _apply_log_level_colors(self, display_content):
+        """为不同级别的日志行添加特殊颜色"""
+        # 获取文本行数
+        total_lines = int(self.text.index('end-1c').split('.')[0])
+        
+        # 计算状态行数（可能包含高频警告行）
+        status_lines = 2  # 默认：配置组行 + 任务行
+        if self.reader.high_frequency_warning:
+            status_lines = 3  # 高频警告行 + 配置组行 + 任务行
+        
+        # 从状态行之后开始检查不同级别的日志
+        for line_num in range(status_lines + 1, total_lines + 1):
+            # 获取行文本
+            line_start = f"{line_num}.0"
+            line_end = f"{line_num}.end"
+            line_text = self.text.get(line_start, line_end)
+            
+            # 检查日志级别并设置对应颜色
+            if ' DBG] ' in line_text:
+                # DBG日志 - 浅蓝色
+                color = self.debug_color
+            elif ' ERR] ' in line_text:
+                # ERR日志 - 浅红色
+                color = self.error_color
+            elif ' WRN] ' in line_text:
+                # WRN日志 - 浅黄色
+                color = self.warning_color
+            else:
+                continue  # 如果不是这些级别，跳过
+            
+            # 创建唯一的标签名
+            tag_name = f"log_level_{line_num}"
+            
+            # 配置标签颜色
+            self.text.tag_configure(tag_name, foreground=color)
+            
+            # 应用标签到整行
+            self.text.tag_add(tag_name, line_start, line_end)
+    
     def _truncate_status_lines(self, content):
         """截断状态行，确保不换行"""
         if not content or len(content) < 2:
@@ -2710,6 +2977,10 @@ class FloatingLogViewer(tk.Tk):
 
     def destroy(self):
         """安全关闭程序 - 保存窗口位置和状态到config.txt"""
+        # 如果在隐藏状态，先恢复显示以确保正确保存状态
+        if self.is_hidden:
+            self._restore_normal_display()
+        
         # 清理字體緩存
         if hasattr(self, '_font_cache'):
             self._font_cache = None
