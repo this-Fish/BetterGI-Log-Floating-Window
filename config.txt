@@ -26,11 +26,12 @@ dynamic_height=true
 # 备份配置
 # -----------------
 # 备份目录路径（留空则不备份，设置路径会自动启用备份功能）
-backup_path=G:\我的雲端硬碟\BGI_log
-# 备份间隔（分钟），默认60
-backup_interval=60
-# 保留最近多少天的备份文件，默认10
-backup_keep_days=10
+# backup_path=S:\我的雲端硬碟\BGI_log
+# backup_path=
+# 备份间隔（分钟），默认30
+backup_interval=30
+# 保留最近多少天的备份文件，默认7
+backup_keep_days=7
 # 调试开关：启动时立即备份一次
 backup_debug=false
 
