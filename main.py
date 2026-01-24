@@ -1,13 +1,7 @@
-# ### 1.4.0 
-# - **新增**：P键暂时停用小窗功能
-#   - 窗口内按下P键，暂停日志刷新与缩小面板 或 恢复正常显示
-#   - P键只在窗口内生效，不影响其他程序
-# - **新增**：DBG/ERR/WRN日志级别颜色区分
-#   - DBG级别日志显示为浅蓝色（可自定义）
-#   - ERR级别日志显示为浅红色（可自定义）
-#   - WRN级别日志显示为浅黄色（可自定义）
-#   - 所有颜色均可通过配置文件自定义
-# - **改进**：配置文件添加日志级别颜色配置项
+# ### 1.4.1
+# 修復啟用自動換行時，日誌行被分割成多行，而顏色標籤只應用在原始行上
+# DBG级别日志預計改為以灰色（#808080）显示
+# 進度顯示支援 自动购买每天&3天&每周刷新食材
 
 __author__ = "蜜柑魚"
 
@@ -89,7 +83,7 @@ class ConfigLoader:
             "normal_color": "#00FF00",# 正常状态文字颜色
             "stale_color": "#FF0000", # 超时警告颜色
             "high_freq_color": "#FFA500", # 高频切换警告颜色
-             "debug_color": "#87CEEB",  # DBG级别日志颜色（浅蓝色）
+             "debug_color": "#808080",  # DBG级别日志颜色（灰色）
             "error_color": "#FF6B6B",  # ERR级别日志颜色（浅红色）
             "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#87CEFA",  # 状态行标题颜色（配置组行）
@@ -119,7 +113,7 @@ class ConfigLoader:
             "normal_color": "#FFFFFF",
             "stale_color": "#FFFFFF",
             "high_freq_color": "#FFFFFF",
-            "debug_color": "#87CEEB",  # DBG级别日志颜色（浅蓝色）
+            "debug_color": "#808080",  # DBG级别日志颜色（灰色）
             "error_color": "#FF6B6B",  # ERR级别日志颜色（浅红色）
             "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#00FF00",  # 第二样式的状态行颜色
@@ -814,6 +808,7 @@ class SmartLogReader:
         self.progress_patterns = {
             "任务开始进度": re.compile(r'\[(\d+)/(\d+)\][^"]*"([^"]+)":\s*开始执行'),
             "当前进度": re.compile(r'当前进度：\s*(\d+)/(\d+)\s*\([^)]+\)'),
+            "購買进度": re.compile(r'当前进度：\s*(\d+)/(\d+)'),
             "采集CD进度": re.compile(r'当前进度：路径组[^为]*为第\s*(\d+)/(\d+)\s*个'),
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
             "钓鱼点进度": re.compile(r'当前钓鱼点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 新增钓鱼点进度
@@ -1059,14 +1054,14 @@ class SmartLogReader:
             return None
 
     def _filter_debug_logs(self, lines):
-        """过滤调试日志 - 跳过包含[DBG]的行"""
+        """过滤调试日志 - 跳过包含DBG]的行"""
         if not self.skip_debug_log:
             return lines
             
         filtered_lines = []
         for line in lines:
-            # 跳过包含[DBG]的调试日志行
-            if '[DBG]' not in line:
+            # 跳过包含DBG]的调试日志行
+            if 'DBG]' not in line:
                 filtered_lines.append(line)
         
         return filtered_lines
@@ -1230,6 +1225,12 @@ class SmartLogReader:
                             "value": f"{current}/{total}"
                         }
                     elif progress_type == "当前进度" and len(groups) >= 2:
+                        current, total = groups[:2]
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
+                        }
+                    elif progress_type == "購買进度" and len(groups) >= 2:
                         current, total = groups[:2]
                         return {
                             "type": "task",
@@ -1882,7 +1883,7 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = config.get("normal_color", "#00FF00")
         self.stale_color = config.get("stale_color", "#FF0000")
         self.high_freq_color = config.get("high_freq_color", "#FFA500")
-        self.debug_color = config.get("debug_color", "#87CEEB")  # 新增
+        self.debug_color = config.get("debug_color", "#808080")  # 新增
         self.error_color = config.get("error_color", "#FF6B6B")  # 新增
         self.warning_color = config.get("warning_color", "#FFD700")  # 新增
         
@@ -2475,7 +2476,7 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = self.config.get("normal_color", "#00FF00")
         self.stale_color = self.config.get("stale_color", "#FF0000")
         self.high_freq_color = self.config.get("high_freq_color", "#FFA500")
-        self.debug_color = self.config.get("debug_color", "#87CEEB")  # 新增
+        self.debug_color = self.config.get("debug_color", "#808080")  # 新增
         self.error_color = self.config.get("error_color", "#FF6B6B")  # 新增
         self.warning_color = self.config.get("warning_color", "#FFD700")  # 新增
         
@@ -2834,39 +2835,66 @@ class FloatingLogViewer(tk.Tk):
         # 获取文本行数
         total_lines = int(self.text.index('end-1c').split('.')[0])
         
-        # 计算状态行数（可能包含高频警告行）
+        #  计算状态行数（可能包含高頻警告行）
         status_lines = 2  # 默认：配置组行 + 任务行
         if self.reader.high_frequency_warning:
             status_lines = 3  # 高频警告行 + 配置组行 + 任务行
         
         # 从状态行之后开始检查不同级别的日志
-        for line_num in range(status_lines + 1, total_lines + 1):
+        for tag_name in list(self.text.tag_names()):
+            if tag_name.startswith("debug_") or tag_name.startswith("error_") or tag_name.startswith("warning_"):
+                self.text.tag_delete(tag_name)
+        
+        # 從狀態行之後開始檢查不同級別的日誌
+        current_line = status_lines + 1
+        while current_line <= total_lines:
             # 获取行文本
-            line_start = f"{line_num}.0"
-            line_end = f"{line_num}.end"
+            line_start = f"{current_line}.0"
+            line_end = f"{current_line}.end"
             line_text = self.text.get(line_start, line_end)
             
             # 检查日志级别并设置对应颜色
-            if ' DBG] ' in line_text:
-                # DBG日志 - 浅蓝色
+            if ' DBG]' in line_text:
                 color = self.debug_color
-            elif ' ERR] ' in line_text:
-                # ERR日志 - 浅红色
+                tag_prefix = "debug"
+            elif ' ERR]' in line_text:
                 color = self.error_color
-            elif ' WRN] ' in line_text:
-                # WRN日志 - 浅黄色
+                tag_prefix = "error"
+            elif ' WRN]' in line_text:
                 color = self.warning_color
+                tag_prefix = "warning"
             else:
-                continue  # 如果不是这些级别，跳过
+                # 如果不是這些級別，檢查下一行
+                current_line += 1
+                continue
             
             # 创建唯一的标签名
-            tag_name = f"log_level_{line_num}"
+            tag_name = f"{tag_prefix}_{current_line}"
             
             # 配置标签颜色
             self.text.tag_configure(tag_name, foreground=color)
             
             # 应用标签到整行
             self.text.tag_add(tag_name, line_start, line_end)
+            
+            # 處理換行後的後續行（如果有縮進標記，則視為同一日誌行的延續）
+            next_line = current_line + 1
+            while next_line <= total_lines:
+                next_line_start = f"{next_line}.0"
+                next_line_end = f"{next_line}.end"
+                next_line_text = self.text.get(next_line_start, next_line_end)
+                
+                # 檢查是否是換行後的延續行（以縮進開頭）
+                if next_line_text.startswith('　　') or next_line_text.startswith('  '):
+                    # 創建延續行的標籤
+                    next_tag_name = f"{tag_prefix}_cont_{next_line}"
+                    self.text.tag_configure(next_tag_name, foreground=color)
+                    self.text.tag_add(next_tag_name, next_line_start, next_line_end)
+                    next_line += 1
+                else:
+                    break
+            
+            current_line = next_line  # 跳過已處理的行
     
     def _truncate_status_lines(self, content):
         """截断状态行，确保不换行"""
