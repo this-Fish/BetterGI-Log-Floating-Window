@@ -6,7 +6,7 @@
 # 日志文件目录路径（必须设置）
 # 请修改为您的BetterGI日志实际目录路径
 # 示例：log_path=C:\Program Files\BetterGI\log
-# log_path=D:\BetterGI\BetterGI_054\log
+# log_path=D:\BetterGI\BetterGI_055\log
 
 # 日志文件名前缀（通常不需要修改）
 log_filename_prefix=better-genshin-impact
@@ -31,7 +31,7 @@ dynamic_height=true
 # 备份间隔（分钟），默认30
 backup_interval=30
 # 保留最近多少天的备份文件，默认7
-backup_keep_days=7
+backup_keep_days=6
 # 调试开关：启动时立即备份一次
 backup_debug=false
 
@@ -54,7 +54,7 @@ stale_color=#FF0000
 high_freq_color=#FFA500
 
 # DBG级别日志文字颜色
-debug_color=#87CEEB
+debug_color=#808080
 
 # ERR级别日志文字颜色
 error_color=#FF6B6B
@@ -111,7 +111,7 @@ style2_stale_color=#FFFFFF
 style2_high_freq_color=#FFFFFF
 
 # 第二样式DBG级别日志文字颜色
-style2_debug_color=#87CEEB
+style2_debug_color=#808080
 
 # 第二样式ERR级别日志文字颜色
 style2_error_color=#FF6B6B
