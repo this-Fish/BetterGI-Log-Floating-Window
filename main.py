@@ -1,10 +1,9 @@
-# ### 1.4.1
-# 修復啟用自動換行時，日誌行被分割成多行，而顏色標籤只應用在原始行上
-# DBG级别日志預計改為以灰色（#808080）显示
-# 進度顯示支援 自动购买每天&3天&每周刷新食材
+# ### 1.4.2
+# 進度顯示支援 AutoFishingTeyvat 2.4.2
+# 進度顯示支援 采集cd管理2.10.1
 
 __author__ = "蜜柑魚"
-
+        
 # 在頂部導入
 import os
 import sys
@@ -790,7 +789,6 @@ class SmartLogReader:
             "配置文件": re.compile(r'assets/(.+?\.json)'),
             # "地图任务": re.compile(r'→ 开始执行(?:地图|路径)追踪任务: "(.+?)"'),
             "地图任务": re.compile(r'→ 开始执行(?:地图|路径)追踪任务: "([^"]+)"'),
-            # "钓鱼点": re.compile(r'当前钓鱼点:\s*([^\n]+)'),
             "键鼠脚本": re.compile(r'→ 开始执行键鼠脚本: "([^"]+)"'),
         }
         
@@ -809,9 +807,11 @@ class SmartLogReader:
             "任务开始进度": re.compile(r'\[(\d+)/(\d+)\][^"]*"([^"]+)":\s*开始执行'),
             "当前进度": re.compile(r'当前进度：\s*(\d+)/(\d+)\s*\([^)]+\)'),
             "購買进度": re.compile(r'当前进度：\s*(\d+)/(\d+)'),
-            "采集CD进度": re.compile(r'当前进度：路径组[^为]*为第\s*(\d+)/(\d+)\s*个'),
+            # "采集CD进度": re.compile(r'当前进度：路径组[^为]*为第\s*(\d+)/(\d+)\s*个'),
+            # 采集CD进度(2.10.0)
+            "采集CD进度": re.compile(r'当前进度：.*?第\s*(\d+)/(\d+)\s*个'),
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
-            "钓鱼点进度": re.compile(r'当前钓鱼点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 新增钓鱼点进度
+            "垂钓点进度": re.compile(r'当前垂钓点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 垂钓点进度
             "产出进度": re.compile(r'当前产出(?:（.*?）)?：\s*(\d+)(?:/(\d+))?\s*个'),
             "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟'),  # 保持不变，只匹配有总时间的情况
             # 新增：循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
@@ -1248,8 +1248,8 @@ class SmartLogReader:
                             "type": "task",
                             "value": f"{current}/{total}"
                         }
-                    # 新增：钓鱼点进度格式
-                    elif progress_type == "钓鱼点进度" and len(groups) >= 2:
+                    #垂钓点进度格式
+                    elif progress_type == "垂钓点进度" and len(groups) >= 2:
                         current, total = groups[:2]
                         return {
                             "type": "task",
@@ -1413,7 +1413,7 @@ class SmartLogReader:
                         task_name = match.group(1).strip()
                         
                         # 特殊處理：對於釣魚點任務，保持完整的任務名稱
-                        if task_type == "钓鱼点":
+                        if task_type == "垂钓点":
                             # 釣魚點任務名稱保持原樣，不進行路徑和擴展名處理
                             latest_task = f"{task_type}: {task_name}"
                         else:
