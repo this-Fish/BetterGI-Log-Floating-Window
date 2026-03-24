@@ -1,6 +1,8 @@
-# ### 1.4.2
-# 進度顯示支援 AutoFishingTeyvat 2.4.2
-# 進度顯示支援 采集cd管理2.10.1
+# ### 1.4.3
+# - **新增**：准点备份功能
+#   - 通过 `backup_align_to_clock` 配置项启用
+#   - 支持按整点分钟对齐备份（仅限60的约数间隔）
+#   - 提高备份时间的可预期性，方便手机端定时查看
 
 __author__ = "蜜柑魚"
         
@@ -75,6 +77,7 @@ class ConfigLoader:
             "backup_path": "",              # 备份目录路径，为空则不备份
             "backup_interval": 60,          # 备份间隔（分钟）
             "backup_debug": False,          # 调试开关：初始备份一次
+            "backup_align_to_clock": False,   # 是否启用准点备份
             "backup_enabled": False,        # 备份功能总开关（根据backup_path是否为空自动设置）
             "backup_keep_days": 10,         # 保留最近多少天的备份文件
             "window_alpha": 0.7,      # 窗口透明度
@@ -236,9 +239,13 @@ class ConfigLoader:
                 self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 self.user_config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 
-            elif key in ["backup_interval", "backup_keep_days"]:
-                self.config[key] = int(value)
-                self.user_config[key] = int(value)
+            elif key in ["backup_interval", "backup_keep_days", "backup_align_to_clock"]:
+                if key == "backup_align_to_clock":
+                    self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
+                    self.user_config[key] = self.config[key]
+                else:
+                    self.config[key] = int(value)
+                    self.user_config[key] = int(value)
             
             elif key in ["backup_debug", "backup_enabled"]:
                 self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
@@ -714,7 +721,8 @@ class SmartLogReader:
     def __init__(self, log_dir, log_filename_prefix, log_path_configured, display_lines=11, 
                  skip_debug_log=False, dynamic_height=False, auto_wrap=False, 
                  max_width=460, font_config=None, backup_path="", backup_interval=60, 
-                 backup_debug=False, backup_enabled=False, backup_keep_days=10):
+                 backup_debug=False, backup_enabled=False, backup_keep_days=10,
+                 backup_align_to_clock=False):
         """智能日志读取器 - 负责读取和解析原神日志文件"""
         # 在初始化时验证log_dir的有效性
         if not log_path_configured:
@@ -737,7 +745,7 @@ class SmartLogReader:
         self.backup_interval = backup_interval  # 分鐘
         self.backup_debug = backup_debug
         self.backup_keep_days = backup_keep_days  # 保留天數
-        # self._backup_thread_local = threading.local()
+        self.backup_align_to_clock = backup_align_to_clock  # 保存
         
         
         # 备份状态跟踪
@@ -1417,15 +1425,26 @@ class SmartLogReader:
                             # 釣魚點任務名稱保持原樣，不進行路徑和擴展名處理
                             latest_task = f"{task_type}: {task_name}"
                         else:
+                            # 常見擴展名列表（可根據需要增減）
+                            known_extensions = ['.json', '.js']
+                            
                             # 其他任務類型：提取純文件名（不含路徑和擴展名）
                             if '/' in task_name or '\\' in task_name:
-                                # 提取文件名（含擴展名）
                                 base_name = os.path.basename(task_name)
-                                # 移除擴展名，獲取純文件名
-                                task_name = os.path.splitext(base_name)[0]
-                            elif '.' in task_name:
-                                # 如果只有文件名但包含擴展名，也移除擴展名
-                                task_name = os.path.splitext(task_name)[0]
+                                # 檢查是否有已知擴展名
+                                for ext in known_extensions:
+                                    if base_name.endswith(ext):
+                                        task_name = base_name[:-len(ext)]
+                                        break
+                                else:
+                                    task_name = base_name  # 無已知擴展名，保留原文件名
+                            else:
+                                # 如果只有文件名且包含已知擴展名，移除擴展名；否則保留原樣
+                                for ext in known_extensions:
+                                    if task_name.endswith(ext):
+                                        task_name = task_name[:-len(ext)]
+                                        break
+                                # 若無匹配的已知擴展名，則保留原 task_name（包括其中的點號）
                             
                             latest_task = f"{task_type}: {task_name}"
                         task_found = True
@@ -1634,22 +1653,26 @@ class SmartLogReader:
             self.backup_enabled = False
     
     def _start_backup_timer(self):
-        """启动备份定时器"""
+        """启动备份定时器（支持对齐模式）"""
         if not self.backup_enabled or not self.backup_interval:
             return
             
         # 取消现有的定时器
         if self.backup_timer:
             self.backup_timer.cancel()
-            
+        
+        # 计算下次备份延迟（秒）
+        if self.backup_align_to_clock:
+            delay = self._calculate_next_aligned_time()
+        else:
+            delay = self.backup_interval * 60
+        
         # 创建新的定时器
-        self.backup_timer = threading.Timer(
-            self.backup_interval * 60,  # 转换为秒
-            self._on_backup_timer
-        )
+        self.backup_timer = threading.Timer(delay, self._on_backup_timer)
         self.backup_timer.daemon = True
         self.backup_timer.start()
-        logging.info(f"备份定时器已启动，间隔: {self.backup_interval}分钟")
+        mode = "对齐模式" if self.backup_align_to_clock else "相对模式"
+        logging.info(f"备份定时器已启动，{mode}，间隔: {self.backup_interval}分钟，延迟: {delay:.0f}秒")
     
     def _on_backup_timer(self):
         """备份定时器回调函数"""
@@ -1701,6 +1724,36 @@ class SmartLogReader:
             
         except Exception as e:
             logging.error(f"备份日志文件失败: {str(e)}")
+    
+    def _calculate_next_aligned_time(self):
+        """计算下一个对齐的备份时间点（秒数）"""
+        if not self.backup_align_to_clock:
+            return self.backup_interval * 60  # 相对模式
+        
+        interval = self.backup_interval
+        # 检查间隔是否合法（60的约数）
+        if 60 % interval != 0:
+            logging.warning(f"备份间隔 {interval} 分钟不是60的约数，无法使用对齐模式，已自动切换为相对模式")
+            self.backup_align_to_clock = False
+            return interval * 60
+        
+        now = datetime.now()
+        current_minute = now.minute
+        # 计算下一个对齐的分钟数
+        next_multiple = ((current_minute // interval) + 1) * interval
+        if next_multiple >= 60:
+            # 进入下一个小时
+            next_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            # 下一个对齐点可能是下一小时的第一个倍数（即 interval 分钟）
+            next_time = next_time.replace(minute=interval)
+        else:
+            next_time = now.replace(minute=next_multiple, second=0, microsecond=0)
+        # 如果计算出的时间在当前时间之前（例如刚好在整点），则加一个间隔
+        if next_time <= now:
+            next_time += timedelta(minutes=interval)
+        delta = (next_time - now).total_seconds()
+        logging.info(f"下次对齐备份时间: {next_time.strftime('%Y-%m-%d %H:%M:%S')}, 间隔 {delta:.0f} 秒")
+        return max(delta, 1)  # 至少1秒
     
     def _check_and_backup_previous_day(self):
         """检查并备份前一天的文件（在检测到日期变更时调用）"""
@@ -1874,7 +1927,8 @@ class FloatingLogViewer(tk.Tk):
             backup_interval,      # 新增
             backup_debug,         # 新增
             backup_enabled,        # 新增
-            backup_keep_days      # 新增
+            backup_keep_days,      # 新增
+            backup_align_to_clock=config.get("backup_align_to_clock", False)  # 新增
         )
         self._prev_content = []  # 上一次显示的内容
         self.last_change_time = datetime.now()  # 最后内容变更时间
