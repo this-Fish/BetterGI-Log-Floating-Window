@@ -1726,12 +1726,10 @@ class SmartLogReader:
             logging.error(f"备份日志文件失败: {str(e)}")
     
     def _calculate_next_aligned_time(self):
-        """计算下一个对齐的备份时间点（秒数）"""
         if not self.backup_align_to_clock:
-            return self.backup_interval * 60  # 相对模式
+            return self.backup_interval * 60
         
         interval = self.backup_interval
-        # 检查间隔是否合法（60的约数）
         if 60 % interval != 0:
             logging.warning(f"备份间隔 {interval} 分钟不是60的约数，无法使用对齐模式，已自动切换为相对模式")
             self.backup_align_to_clock = False
@@ -1739,21 +1737,20 @@ class SmartLogReader:
         
         now = datetime.now()
         current_minute = now.minute
-        # 计算下一个对齐的分钟数
+        # 计算下一个对齐的分钟数（0, interval, 2*interval, ..., 60）
         next_multiple = ((current_minute // interval) + 1) * interval
-        if next_multiple >= 60:
-            # 进入下一个小时
+        if next_multiple == 60:
+            # 下一小时的整点
             next_time = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-            # 下一个对齐点可能是下一小时的第一个倍数（即 interval 分钟）
-            next_time = next_time.replace(minute=interval)
         else:
+            # 当前小时的某个分钟
             next_time = now.replace(minute=next_multiple, second=0, microsecond=0)
-        # 如果计算出的时间在当前时间之前（例如刚好在整点），则加一个间隔
+        # 如果计算出的时间已经过去（极少情况），加一个间隔
         if next_time <= now:
             next_time += timedelta(minutes=interval)
         delta = (next_time - now).total_seconds()
         logging.info(f"下次对齐备份时间: {next_time.strftime('%Y-%m-%d %H:%M:%S')}, 间隔 {delta:.0f} 秒")
-        return max(delta, 1)  # 至少1秒
+        return max(delta, 1)
     
     def _check_and_backup_previous_day(self):
         """检查并备份前一天的文件（在检测到日期变更时调用）"""
