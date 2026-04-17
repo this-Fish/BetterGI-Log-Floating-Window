@@ -1100,7 +1100,7 @@ class SmartLogReader:
         }
 
         # 如果启用了备份且备份路径有效，初始化备份功能
-        if self.backup_enabled:
+        if self.backup_path:
             self._init_backup()
         self._update_log_file()  # 初始化日志文件
 
@@ -1892,9 +1892,9 @@ class SmartLogReader:
     
     def _init_backup(self):
         """初始化备份功能"""
-        # 檢查是否啟用備份功能且路徑有效
-        if not self.backup_enabled or not self.backup_path:
-            logging.info(f"備份功能未啟用: enabled={self.backup_enabled}, path={self.backup_path}")
+        # 檢查是否啟用備份功能
+        if not self.backup_path:
+            logging.info("備份路徑未設置，跳過備份初始化")
             return
         
         try:
@@ -1919,13 +1919,15 @@ class SmartLogReader:
             # 初始清理
             self._cleanup_old_backups()
             
+            # 確認備份功能已啟用
+            self.backup_enabled = True
         except Exception as e:
             logging.error(f"初始化備份功能失敗: {str(e)}")
             self.backup_enabled = False
     
     def _start_backup_timer(self):
         """启动备份定时器（支持对齐模式）"""
-        if not self.backup_enabled or not self.backup_interval:
+        if not self.backup_path or not self.backup_interval:
             return
             
         # 取消现有的定时器
@@ -1972,7 +1974,7 @@ class SmartLogReader:
         :param debug_mode: 是否為調試模式備份（不影響定時器）
         :param manual: 是否為手動觸發
         """
-        if not self.backup_enabled or not self._current_file:
+        if not self.backup_path or not self._current_file:
             return False
 
         try:
@@ -2859,15 +2861,15 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = self.config.get("normal_color", "#00FF00")
         self.stale_color = self.config.get("stale_color", "#FF0000")
         self.high_freq_color = self.config.get("high_freq_color", "#FFA500")
-        self.debug_color = self.config.get("debug_color", "#808080")  # 新增
-        self.error_color = self.config.get("error_color", "#FF6B6B")  # 新增
-        self.warning_color = self.config.get("warning_color", "#FFD700")  # 新增
-        self.backup_msg_color = self.config.get("backup_msg_color", "#FFD700")  # 备份消息颜色
+        self.debug_color = self.config.get("debug_color", "#808080")
+        self.error_color = self.config.get("error_color", "#FF6B6B")
+        self.warning_color = self.config.get("warning_color", "#FFD700")
+        self.backup_msg_color = self.config.get("backup_msg_color", "#FFD700")
         
         # 更新临时消息颜色
         self.temp_message_color = self.backup_msg_color
         
-        # 更新窗口属性 - 使用max_width和max_height
+        # 更新窗口属性
         self.max_width = self.config.get("max_width", 460)
         self.max_height = self.config.get("max_height", 220)
         self.display_lines = self.config.get("display_lines", 11)
@@ -2876,7 +2878,7 @@ class FloatingLogViewer(tk.Tk):
         # 清理字体缓存
         self.clear_font_cache()
         
-        # 删除所有文本标签，确保样式完全重置
+        # 删除所有文本标签
         self.text.tag_delete("config_header")
         self.text.tag_delete("task_header")
         self.text.tag_delete("high_freq_warning")
@@ -2926,7 +2928,7 @@ class FloatingLogViewer(tk.Tk):
             wrap=wrap_mode
         )
         
-        # 更新窗口尺寸 - 使用max_width和max_height
+        # 更新窗口尺寸
         current_x = self.winfo_x()
         current_y = self.winfo_y()
         self.geometry(f"{self.max_width}x{self.max_height}+{current_x}+{current_y}")
@@ -2947,6 +2949,14 @@ class FloatingLogViewer(tk.Tk):
             "font_weight": font_weight
         }
         
+        # 獲取備份相關配置
+        backup_path = self.config.get("backup_path", "")
+        backup_interval = self.config.get("backup_interval", 60)
+        backup_debug = self.config.get("backup_debug", False)
+        backup_enabled = self.config.get("backup_enabled", False)
+        backup_keep_days = self.config.get("backup_keep_days", 10)
+        backup_align_to_clock = self.config.get("backup_align_to_clock", False)
+        
         # 重新創建 reader 以應用新的配置
         self.reader = SmartLogReader(
             log_dir, 
@@ -2957,7 +2967,13 @@ class FloatingLogViewer(tk.Tk):
             dynamic_height,
             auto_wrap,
             self.max_width,
-            font_config_dict
+            font_config_dict,
+            backup_path,
+            backup_interval,
+            backup_debug,
+            backup_enabled,
+            backup_keep_days,
+            backup_align_to_clock
         )
         
         # 強制刷新顯示
