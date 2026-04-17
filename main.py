@@ -1,8 +1,6 @@
-# ### 1.4.3
-# - **新增**：准点备份功能
-#   - 通过 `backup_align_to_clock` 配置项启用
-#   - 支持按整点分钟对齐备份（仅限60的约数间隔）
-#   - 提高备份时间的可预期性，方便手机端定时查看
+# ### 1.4.4
+# - **新增**：`Alt+B` 立即备份（顶部显示提示，2秒后消失，颜色可自定义）
+# - **新增**：内置配置模板与自动补全（旧版 config.txt 直接放入即自动添加新配置项，保留你的所有修改）
 
 __author__ = "蜜柑魚"
         
@@ -64,6 +62,192 @@ logging.basicConfig(
 )
 
 class ConfigLoader:
+        # 內嵌完整設定檔模板（基於用戶提供的 config.txt，log_path 保持註解狀態）
+    DEFAULT_CONFIG_TEMPLATE = '''# BetterGI日志悬浮窗配置文件
+# =============================================
+# 基本设置段 - 程序运行必需的核心参数
+# =============================================
+
+# 日志文件目录路径（必须设置）
+# 请修改为您的BetterGI日志实际目录路径
+# 示例：log_path=C:\\Program Files\\BetterGI\\log
+# log_path=D:\\BetterGI\\BetterGI_060\\log
+
+# 日志文件名前缀（通常不需要修改）
+log_filename_prefix=better-genshin-impact
+
+# 窗口预设位置X坐标
+initial_x=0
+
+# 窗口预设位置Y坐标
+initial_y=0
+
+# 是否跳过调试日志 (true-跳过, false-显示)
+skip_debug_log=false
+
+# 自适应高度
+dynamic_height=true
+
+# 备份配置
+# -----------------
+# 备份目录路径（留空则不备份，设置路径会自动启用备份功能）
+# backup_path=X:\\我的雲端硬碟\\BGI_log
+# backup_path=
+# 备份间隔（分钟），默认30
+backup_interval=30
+# 保留最近多少天的备份文件，默认7
+backup_keep_days=6
+# 调试开关：启动时立即备份一次
+backup_debug=false
+# 是否启用准点备份（true-按整点分钟对齐，false-相对时间模式）
+backup_align_to_clock=true
+
+# =============================================
+# 主样式段 - 用户自定义设置
+# =============================================
+# 窗口透明度 (0.1-1.0，1.0为完全不透明)
+window_alpha=0.7
+
+# 窗口背景颜色（十六进制颜色代码）
+bg_color=#000000
+
+# 正常状态文字颜色
+normal_color=#00FF00
+
+# 超时警告文字颜色（60秒无更新时显示）
+stale_color=#FF0000
+
+# 高频切换警告文字颜色
+high_freq_color=#FFA500
+
+# 备份临时消息文字颜色
+backup_msg_color=#FFD700
+
+# DBG级别日志文字颜色
+debug_color=#808080
+
+# ERR级别日志文字颜色
+error_color=#FF6B6B
+
+# WRN级别日志文字颜色
+warning_color=#FFD700
+
+# 状态行标题颜色（配置组行）
+status_header_color=#87CEFA
+
+# 任务行标题颜色
+task_header_color=#87CEFA
+
+# 字体名称（请确保系统中已安装该字体）
+font_name=Consolas
+
+# 字体大小
+font_size=12
+
+# 字体粗细 (normal-正常, bold-粗体)
+font_weight=bold
+
+# 窗口最大宽度（像素）
+max_width=768
+
+# 窗口最大高度（像素）
+max_height=288
+
+# 日志记录显示行数
+display_lines=13
+
+# 窗口刷新间隔（毫秒）
+refresh_interval=1000
+
+# 是否啟用自動換行
+auto_wrap=true
+
+# =============================================
+# 第二样式配置段 - 使用Alt+K切换到此样式
+# =============================================
+# 第二样式窗口透明度
+style2_window_alpha=0.7
+
+# 第二样式窗口背景颜色
+style2_bg_color=#000000
+
+# 第二样式正常状态文字颜色
+style2_normal_color=#FFFFFF
+
+# 第二样式超时警告文字颜色
+style2_stale_color=#FFFFFF
+
+# 第二样式高频警告文字颜色
+style2_high_freq_color=#FFFFFF
+
+# 备份临时消息文字颜色（第二样式）
+style2_backup_msg_color=#FFD700
+
+# 第二样式DBG级别日志文字颜色
+style2_debug_color=#808080
+
+# 第二样式ERR级别日志文字颜色
+style2_error_color=#FF6B6B
+
+# 第二样式WRN级别日志文字颜色
+style2_warning_color=#FFD700
+
+# 第二样式状态行标题颜色
+style2_status_header_color=#00FF00
+
+# 第二样式任务行标题颜色
+style2_task_header_color=#00FFFF
+
+# 第二样式字体名称
+style2_font_name=Consolas
+
+# 第二样式字体大小
+style2_font_size=9
+
+# 第二样式字体粗细
+style2_font_weight=bold
+
+# 第二样式窗口最大宽度
+style2_max_width=460
+
+# 第二样式窗口最大高度
+style2_max_height=220
+
+# 第二样式日志记录显示行数
+style2_display_lines=12
+
+# 第二样式窗口刷新间隔
+style2_refresh_interval=500
+
+# 第二样式是否啟用自動換行
+style2_auto_wrap=true
+
+# =============================================
+[程序自动管理配置段]
+# 注意：以下配置由程序自动管理，请勿手动修改
+# =============================================
+
+# 透明背景模式状态 (true-开启, false-关闭)
+# 程序根据Alt+I快捷键自动更新
+transparent_mode=false
+
+# 不可选中模式状态 (true-开启, false-关闭)
+# 程序根据Alt+N快捷键自动更新
+click_through=false
+
+# 第二样式启用状态 (true-开启, false-关闭)
+# 程序根据Alt+K快捷键自动更新
+author_style2=false
+
+# 窗口记忆位置X坐标
+# 程序自动保存窗口关闭时的位置
+window_x=
+
+# 窗口记忆位置Y坐标
+# 程序自动保存窗口关闭时的位置
+window_y=
+'''
+
     def __init__(self, config_file="config.txt"):
         """配置文件加载器 - 从config.txt读取用户设置"""
         script_dir = get_base_path()
@@ -85,16 +269,17 @@ class ConfigLoader:
             "normal_color": "#00FF00",# 正常状态文字颜色
             "stale_color": "#FF0000", # 超时警告颜色
             "high_freq_color": "#FFA500", # 高频切换警告颜色
-             "debug_color": "#808080",  # DBG级别日志颜色（灰色）
+            "debug_color": "#808080",  # DBG级别日志颜色（灰色）
             "error_color": "#FF6B6B",  # ERR级别日志颜色（浅红色）
             "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#87CEFA",  # 状态行标题颜色（配置组行）
             "task_header_color": "#87CEFA",    # 任务行标题颜色
+            "backup_msg_color": "#FFD700",     # 备份临时消息颜色（黄色）
             "font_name": "Consolas",  # 字体名称
             "font_size": 11,          # 字体大小
             "font_weight": "bold",    # 字体粗细
             "max_height": 220,        # 窗口最大高度
-            "max_width": 460,        # 窗口最大宽度
+            "max_width": 460,         # 窗口最大宽度
             "initial_x": 0,           # 窗口预设位置X坐标
             "initial_y": 0,           # 窗口预设位置Y坐标
             "display_lines": 11,      # 显示行数
@@ -120,6 +305,7 @@ class ConfigLoader:
             "warning_color": "#FFD700", # WRN级别日志颜色（浅黄色）
             "status_header_color": "#00FF00",  # 第二样式的状态行颜色
             "task_header_color": "#00FFFF",   # 第二样式的任务行颜色
+            "backup_msg_color": "#FFD700",    # 第二样式备份消息颜色
             "font_name": "Consolas",
             "font_size": 9,
             "font_weight": "bold",
@@ -139,6 +325,9 @@ class ConfigLoader:
         self.initial_log_filename_prefix = "better-genshin-impact"
         self.initial_log_path_configured = False
         
+        # 確保設定檔完整（自動補全缺失項目）
+        self._ensure_config_complete()
+        
         # 加载所有配置
         self.load_all_settings()
         
@@ -150,6 +339,82 @@ class ConfigLoader:
         # 如果配置中启用了第二样式，则应用
         if self.config.get("author_style2", False):
             self.apply_second_style()
+            
+    def _ensure_config_complete(self):
+        """確保 config.txt 完整：若不存在則寫入模板，若存在則補全缺失的配置項（排除 log_path 和 backup_enabled）"""
+        if not self.config_file.exists():
+            # 檔案不存在，直接寫入完整模板
+            try:
+                with open(self.config_file, 'w', encoding='utf-8') as f:
+                    f.write(self.DEFAULT_CONFIG_TEMPLATE)
+                logging.info(f"已建立完整設定檔: {self.config_file}")
+            except Exception as e:
+                logging.error(f"建立設定檔失敗: {str(e)}")
+            return
+
+        # 檔案存在，需要補全缺失的項目
+        # 步驟1：讀取現有檔案中所有有效的 key=value（跳過註解行、空行）
+        existing_keys = set()
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key = line.split('=', 1)[0].strip()
+                        existing_keys.add(key)
+        except Exception as e:
+            logging.error(f"讀取設定檔失敗: {str(e)}")
+            return
+
+        # 步驟2：定義所有應該存在的配置項（排除 log_path 和 backup_enabled）
+        all_expected_keys = set()
+        # 加入主樣式 default_config 中的所有 key（排除 log_path 和 backup_enabled）
+        for key in self.default_config:
+            if key not in ("log_path", "backup_enabled"):
+                all_expected_keys.add(key)
+        # 加入第二樣式中的所有 key（因為它們在模板中是以 style2_ 前綴存在）
+        for key in self.second_style_config:
+            all_expected_keys.add(f"style2_{key}")
+        # 確保 backup_msg_color 和 style2_backup_msg_color 存在（已包含在上面的邏輯中）
+        # 額外確保 window_x, window_y 等程式自動管理的項目也納入補全（它們在 default_config 中）
+        # 但注意：backup_enabled 已經被排除
+
+        # 找出缺失的 keys
+        missing_keys = all_expected_keys - existing_keys
+        if not missing_keys:
+            logging.debug("設定檔完整，無需補全")
+            return
+
+        logging.info(f"發現缺失的配置項: {missing_keys}，將自動補全")
+
+        # 步驟3：備份原檔案
+        backup_file = self.config_file.with_suffix('.txt.bak')
+        try:
+            shutil.copy2(self.config_file, backup_file)
+            logging.info(f"已備份原設定檔至: {backup_file}")
+        except Exception as e:
+            logging.warning(f"備份設定檔失敗: {str(e)}")
+
+        # 步驟4：將缺失的項目追加到檔案末尾
+        try:
+            with open(self.config_file, 'a', encoding='utf-8') as f:
+                f.write("\n\n# ===== 以下為程式自動補全的配置項 =====\n")
+                for key in sorted(missing_keys):
+                    # 取得預設值
+                    if key.startswith("style2_"):
+                        # 第二樣式 key，去掉前綴後從 second_style_config 取值
+                        inner_key = key[7:]  # 移除 "style2_"
+                        default_value = self.second_style_config.get(inner_key, "")
+                    else:
+                        # 主樣式 key
+                        default_value = self.default_config.get(key, "")
+                    # 寫入 key=預設值
+                    f.write(f"{key}={default_value}\n")
+            logging.info(f"已自動補全 {len(missing_keys)} 個配置項")
+        except Exception as e:
+            logging.error(f"補全設定檔失敗: {str(e)}")
 
     def load_all_settings(self):
         """加载所有配置 - 直接根据配置项名称读取，不依赖段落标记"""
@@ -264,6 +529,9 @@ class ConfigLoader:
                 else:
                     self.config["backup_enabled"] = False
                     self.user_config["backup_enabled"] = False
+            elif key == "backup_msg_color":
+                self.config[key] = value
+                self.user_config[key] = value
             else:
                 self.config[key] = value
                 self.user_config[key] = value
@@ -537,9 +805,10 @@ class GlobalShortcutManager:
                 keyboard.add_hotkey('alt+i', self._create_event_callback('toggle_transparent'), suppress=True)
                 keyboard.add_hotkey('alt+n', self._create_event_callback('toggle_click_through'), suppress=True)
                 keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
+                keyboard.add_hotkey('alt+b', self._create_event_callback('backup'), suppress=True)  # 新增 Alt+B 立即备份
                 
                 self.hotkeys_registered = True
-                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), P(隐藏/显示)")
+                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), Alt+B(立即备份), P(隐藏/显示)")
                 return True
                 
             except Exception as register_error:
@@ -703,6 +972,8 @@ class GlobalShortcutManager:
                 self.root._on_second_style_toggle_shortcut()
             elif event == 'toggle_visibility':  # 新增：处理隐藏/显示事件
                 self.root._on_toggle_visibility_shortcut()
+            elif event == 'backup':  # 新增：处理立即备份事件
+                self.root._on_backup_shortcut()
                 
         except Exception as e:
             logging.error(f"处理快捷键事件失败: {str(e)}")
@@ -1688,42 +1959,59 @@ class SmartLogReader:
             # 重新启动定时器
             self._start_backup_timer()
     
-    def _backup_log_file(self, debug_mode=False):
-        """备份日志文件"""
+    def backup_now(self, manual=False):
+        """手動立即備份，返回是否成功"""
+        if not self.backup_enabled:
+            return False
+        if not self._current_file or not self._current_file.exists():
+            return False
+        return self._backup_log_file(manual=manual)
+    
+    def _backup_log_file(self, debug_mode=False, manual=False):
+        """备份日志文件
+        :param debug_mode: 是否為調試模式備份（不影響定時器）
+        :param manual: 是否為手動觸發
+        """
         if not self.backup_enabled or not self._current_file:
-            return
-            
+            return False
+
         try:
             current_time = time.time()
-            
             # 检查是否需要备份（距离上次备份时间超过5秒，避免频繁备份）
             if not debug_mode and (current_time - self.last_backup_time < 5):
-                return
-                
+                return False
+
             source_file = self._current_file
             if not source_file or not source_file.exists():
-                return
-                
+                return False
+
             # 获取文件名（不包含时间戳）
             file_name = source_file.name
             # 处理带序号的文件名：better-genshin-impactYYYYMMDD_001.log
             # 处理不带序号的文件名：better-genshin-impactYYYYMMDD.log
             target_file = self.backup_path / file_name
-            
+
             # 复制文件
             shutil.copy2(source_file, target_file)
-            
+
             self.last_backup_time = current_time
             log_msg = f"日志文件已备份: {source_file.name} -> {target_file}"
             if debug_mode:
                 log_msg = "[调试] " + log_msg
             logging.info(log_msg)
-            
+
+            # 手動備份且為相對模式（非調試）時重置定時器
+            if manual and not debug_mode and not self.backup_align_to_clock:
+                self._start_backup_timer()
+                logging.info("手動備份後已重置相對模式定時器")
+
             # 备份完成后清理旧文件
             self._cleanup_old_backups()
-            
+            return True
+
         except Exception as e:
             logging.error(f"备份日志文件失败: {str(e)}")
+            return False
     
     def _calculate_next_aligned_time(self):
         if not self.backup_align_to_clock:
@@ -1937,6 +2225,7 @@ class FloatingLogViewer(tk.Tk):
         self.debug_color = config.get("debug_color", "#808080")  # 新增
         self.error_color = config.get("error_color", "#FF6B6B")  # 新增
         self.warning_color = config.get("warning_color", "#FFD700")  # 新增
+        self.backup_msg_color = config.get("backup_msg_color", "#FFD700")  # 备份临时消息颜色
         
         # 性能优化：字体缓存
         self._font_cache = None
@@ -1955,6 +2244,11 @@ class FloatingLogViewer(tk.Tk):
         # 新增：窗口隐藏状态
         self.is_hidden = False  # 窗口是否隐藏
         self.hidden_message = "日志悬浮窗 - 停用中"  # 隐藏时显示的文字
+
+        # 新增：临时消息（类似警告行）
+        self.temp_message = None          # 当前临时消息文字
+        self.temp_message_expiry = 0      # 过期时间戳（time.time()）
+        self.temp_message_color = self.backup_msg_color  # 使用配置的颜色
         
         # 窗口配置 - 使用保存的位置，如果 window_x/window_y 为 None 则使用 initial_x/initial_y
         self.preset_x = config.get("initial_x", 0)
@@ -2175,6 +2469,9 @@ class FloatingLogViewer(tk.Tk):
         # 新增：P键隐藏/显示窗口（只在窗口内生效）
         self.bind("<KeyPress-p>", self._on_toggle_visibility_shortcut)
         self.bind("<KeyPress-P>", self._on_toggle_visibility_shortcut)
+        # 新增：Alt+B 立即备份
+        self.bind("<Alt-KeyPress-b>", self._on_backup_shortcut)
+        self.bind("<Alt-KeyPress-B>", self._on_backup_shortcut)
             
         # 簡單的日誌記錄，不依賴於 hotkeys_registered
         if KEYBOARD_AVAILABLE:
@@ -2183,6 +2480,41 @@ class FloatingLogViewer(tk.Tk):
             logging.info("全局快捷键不可用，已启用窗口内快捷键")
             
         self.focus_set()  # 确保窗口能够接收键盘事件
+
+    def show_temp_message(self, text, duration=2):
+        """显示临时消息（类似警告行），持续 duration 秒后自动消失"""
+        self.temp_message = text
+        self.temp_message_expiry = time.time() + duration
+        # 强制立即刷新显示
+        self._force_immediate_display_update()
+        # 设定定时器，到期后再次刷新以清除消息
+        self.after(int(duration * 1000), self._clear_temp_message)
+
+    def _clear_temp_message(self):
+        """清除过期的临时消息（仅当消息已过期时才清除）"""
+        if self.temp_message and time.time() >= self.temp_message_expiry:
+            self.temp_message = None
+            self._force_immediate_display_update()
+
+    def _on_backup_shortcut(self, event=None):
+        """Alt+B 立即备份"""
+        if not self.reader.backup_enabled:
+            self.show_temp_message("⚠️ 备份未启用", 2)
+            return
+
+        # 显示备份中
+        self.show_temp_message("⏳ 立即备份中...", 2)
+
+        # 执行备份（同步）
+        try:
+            success = self.reader.backup_now(manual=True)
+            if success:
+                self.show_temp_message("✅ 备份成功", 2)
+            else:
+                self.show_temp_message("❌ 备份失败", 2)
+        except Exception as e:
+            logging.error(f"手动备份异常: {str(e)}")
+            self.show_temp_message("❌ 备份失败", 2)
 
     def _on_toggle_visibility_shortcut(self, event=None):
         """P键快捷键处理函数 - 切换窗口显示/隐藏"""
@@ -2530,6 +2862,10 @@ class FloatingLogViewer(tk.Tk):
         self.debug_color = self.config.get("debug_color", "#808080")  # 新增
         self.error_color = self.config.get("error_color", "#FF6B6B")  # 新增
         self.warning_color = self.config.get("warning_color", "#FFD700")  # 新增
+        self.backup_msg_color = self.config.get("backup_msg_color", "#FFD700")  # 备份消息颜色
+        
+        # 更新临时消息颜色
+        self.temp_message_color = self.backup_msg_color
         
         # 更新窗口属性 - 使用max_width和max_height
         self.max_width = self.config.get("max_width", 460)
@@ -2687,6 +3023,10 @@ class FloatingLogViewer(tk.Tk):
         if content and content[0].startswith("⚠️"):
             status_lines = 3  # 高频警告行 + 配置组行 + 任务行
         
+        # 如果有临时消息，再增加1
+        if self.temp_message and time.time() < self.temp_message_expiry:
+            status_lines += 1
+
         # 跳过状态行，只比较日志内容
         if len(content) <= status_lines:
             return hash(tuple(content))
@@ -2737,7 +3077,11 @@ class FloatingLogViewer(tk.Tk):
                 # 添加高频切换警告状态行
                 if self.reader.high_frequency_warning:
                     display_content.insert(0, f"⚠️ 任务切换过于频繁 ({len(self.reader.task_switch_times)}次/分钟) ⚠️")
-                    
+                
+                # 新增：如果存在临时消息且未过期，插入到最顶部
+                if self.temp_message and time.time() < self.temp_message_expiry:
+                    display_content.insert(0, self.temp_message)
+
                 # 如果启用自动换行，处理状态行的截断
                 if self.config.get("auto_wrap", False):
                     display_content = self._truncate_status_lines(display_content)
@@ -2789,6 +3133,8 @@ class FloatingLogViewer(tk.Tk):
                 status_lines = 2
                 if self.reader.high_frequency_warning:
                     status_lines = 3
+                if self.temp_message and time.time() < self.temp_message_expiry:
+                    status_lines += 1
                 
                 # 获取状态行和任务行颜色 - 从当前配置中获取最新值
                 status_color = self.config.get("status_header_color", "#87CEFA")
@@ -2806,9 +3152,31 @@ class FloatingLogViewer(tk.Tk):
                 self.text.tag_delete("config_header")
                 self.text.tag_delete("task_header")
                 self.text.tag_delete("high_freq_warning")
+                self.text.tag_delete("temp_message")
+                
+                # 临时消息行样式（最顶部）
+                if self.temp_message and time.time() < self.temp_message_expiry:
+                    self.text.tag_configure("temp_message", foreground=self.temp_message_color)
+                    self.text.tag_add("temp_message", "1.0", "1.end")
+                    # 如果还有高频警告，它的行索引会变成第2行
+                    warning_line_offset = 1
+                else:
+                    warning_line_offset = 0
+                
+                # 高频警告行样式
+                if self.reader.high_frequency_warning:
+                    warning_line = 1 + warning_line_offset
+                    self.text.tag_configure(
+                        "high_freq_warning",
+                        foreground=self.high_freq_color,
+                        font=(font_name, font_size, font_weight)
+                    )
+                    self.text.tag_add("high_freq_warning", f"{warning_line}.0", f"{warning_line}.end")
+                    config_line = warning_line + 1
+                else:
+                    config_line = 1 + warning_line_offset
                 
                 # 配置组行样式
-                config_line = 1 if status_lines == 2 else 2
                 self.text.tag_configure(
                     "config_header",
                     foreground=status_color,
@@ -2817,7 +3185,7 @@ class FloatingLogViewer(tk.Tk):
                 self.text.tag_add("config_header", f"{config_line}.0", f"{config_line}.end")
                 
                 # 任务行样式
-                task_line = 2 if status_lines == 2 else 3
+                task_line = config_line + 1
                 self.text.tag_configure(
                     "task_header",
                     foreground=task_color,
@@ -2826,15 +3194,6 @@ class FloatingLogViewer(tk.Tk):
                     borderwidth=2
                 )
                 self.text.tag_add("task_header", f"{task_line}.0", f"{task_line}.end")
-                
-                # 高频警告行样式
-                if self.reader.high_frequency_warning:
-                    self.text.tag_configure(
-                        "high_freq_warning",
-                        foreground=self.high_freq_color,
-                        font=(font_name, font_size, font_weight)
-                    )
-                    self.text.tag_add("high_freq_warning", "1.0", "1.end")
 
             # 重新禁用编辑
             self.text.config(state='disabled')
@@ -2886,10 +3245,12 @@ class FloatingLogViewer(tk.Tk):
         # 获取文本行数
         total_lines = int(self.text.index('end-1c').split('.')[0])
         
-        #  计算状态行数（可能包含高頻警告行）
+        #  计算状态行数（可能包含高頻警告行和临时消息）
         status_lines = 2  # 默认：配置组行 + 任务行
         if self.reader.high_frequency_warning:
             status_lines = 3  # 高频警告行 + 配置组行 + 任务行
+        if self.temp_message and time.time() < self.temp_message_expiry:
+            status_lines += 1  # 临时消息行
         
         # 从状态行之后开始检查不同级别的日志
         for tag_name in list(self.text.tag_names()):

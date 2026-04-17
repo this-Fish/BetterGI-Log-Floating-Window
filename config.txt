@@ -55,6 +55,9 @@ stale_color=#FF0000
 # 高频切换警告文字颜色
 high_freq_color=#FFA500
 
+# 备份临时消息文字颜色
+backup_msg_color=#FFD700
+
 # DBG级别日志文字颜色
 debug_color=#808080
 
@@ -111,6 +114,9 @@ style2_stale_color=#FFFFFF
 
 # 第二样式高频警告文字颜色
 style2_high_freq_color=#FFFFFF
+
+# 备份临时消息文字颜色（第二样式）
+style2_backup_msg_color=#FFD700
 
 # 第二样式DBG级别日志文字颜色
 style2_debug_color=#808080
