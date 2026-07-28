@@ -1,6 +1,8 @@
-# ### 1.4.4
-# - **新增**：`Alt+B` 立即备份（顶部显示提示，2秒后消失，颜色可自定义）
-# - **新增**：内置配置模板与自动补全（旧版 config.txt 直接放入即自动添加新配置项，保留你的所有修改）
+# ### 1.4.5
+#   - **適配**
+#   - 進度顯示支援 適配
+#     - AAA-Artifacts-Bulk-Supply
+#     - 采集cd管理3.0.2
 
 __author__ = "蜜柑魚"
         
@@ -1088,7 +1090,10 @@ class SmartLogReader:
             "購買进度": re.compile(r'当前进度：\s*(\d+)/(\d+)'),
             # "采集CD进度": re.compile(r'当前进度：路径组[^为]*为第\s*(\d+)/(\d+)\s*个'),
             # 采集CD进度(2.10.0)
-            "采集CD进度": re.compile(r'当前进度：.*?第\s*(\d+)/(\d+)\s*个'),
+            # "采集CD进度": re.compile(r'当前进度：.*?第\s*(\d+)/(\d+)\s*个'),
+            # 采集CD进度(3.0.2)
+            "采集CD进度": re.compile(r'(?:当前进度：)?执行路线.*?第\s*(\d+)/(\d+)\s*个'),
+            
             "组任务进度": re.compile(r'开始处理第\s*(\d+)\s*组第\s*(\d+)/(\d+)\s*个([^\.]+\.json)'),
             "垂钓点进度": re.compile(r'当前垂钓点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 垂钓点进度
             "产出进度": re.compile(r'当前产出(?:（.*?）)?：\s*(\d+)(?:/(\d+))?\s*个'),
@@ -1097,6 +1102,8 @@ class SmartLogReader:
             "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环'),
             "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+'),
             "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
+            # 新增狗粮进度
+            "狗粮进度": re.compile(r'为.+?第\s*(\d+)/(\d+)\s*个'),
         }
 
         # 如果启用了备份且备份路径有效，初始化备份功能
@@ -1590,6 +1597,12 @@ class SmartLogReader:
                         return {
                             "type": "task",
                             "value": f"{current}/{total}轮"
+                        }
+                    elif progress_type == "狗粮进度" and len(groups) >= 2:
+                        current, total = groups[:2]
+                        return {
+                            "type": "task",
+                            "value": f"{current}/{total}"
                         }
                 except (ValueError, IndexError) as e:
                     logging.warning(f"进度信息解析失败: {line}, 错误: {e}")
