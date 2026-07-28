@@ -6,7 +6,7 @@
 # 日志文件目录路径（必须设置）
 # 请修改为您的BetterGI日志实际目录路径
 # 示例：log_path=C:\Program Files\BetterGI\log
-# log_path=D:\BetterGI\BetterGI_058\log
+# log_path=D:\BetterGI\log
 
 # 日志文件名前缀（通常不需要修改）
 log_filename_prefix=better-genshin-impact
