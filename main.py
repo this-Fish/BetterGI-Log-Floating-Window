@@ -1,8 +1,7 @@
-# ### 1.4.5
+# ### 1.4.6
 #   - **適配**
-#   - 進度顯示支援 適配
-#     - AAA-Artifacts-Bulk-Supply
-#     - 采集cd管理3.0.2
+#   - 適配BGI_0.63.0日志格式
+
 
 __author__ = "蜜柑魚"
         
@@ -1103,7 +1102,7 @@ class SmartLogReader:
             "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+'),
             "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
             # 新增狗粮进度
-            "狗粮进度": re.compile(r'为.+?第\s*(\d+)/(\d+)\s*个'),
+            "狗粮进度": re.compile(r'(?:当前进度：)?.*?为.+?第\s*(\d+)/(\d+)\s*个'),
         }
 
         # 如果启用了备份且备份路径有效，初始化备份功能
@@ -1453,31 +1452,43 @@ class SmartLogReader:
             
         # 记录基础任务名称用于调试
         logging.debug(f"任务基础名称: 当前='{current_base_task}', 新='{new_base_task}', 类型={switch_type}")
-            
+    
+    #  兼容BGI_0.63.0版本新日志格式
     def _format_log_line(self, line):
-        """格式化日志行 - 移除类名部分，简化显示"""
-        # 确保 line 是字符串
+        """兼容新旧日志格式，统一显示为 [HH:MM:SS 级别] 消息"""
         if not isinstance(line, str):
             try:
                 line = str(line)
             except Exception as e:
                 logging.warning(f"无法格式化非字符串日志行: {type(line)}，错误: {str(e)}")
                 return str(line)
-        
-        match = self.log_format_pattern.match(line)
-        if match:
-            timestamp = match.group(1)
-            log_level = match.group(2)
-            message = match.group(3) or ""  # 确保消息不为None
-            
-            # 特殊处理配置组信息 - 保持完整显示
-            if "配置组" in message:
-                return f"{timestamp[:-5]} {log_level}] {message}"
-            
-            # 完全移除类名部分 - 简化显示
-            return f"{timestamp[:-5]} {log_level}] {message}"
-        return line  # 如果无法匹配，返回原始行
 
+        # 新格式：时间 级别 [额外标识] 类名 消息
+        new_pattern = re.compile(
+            r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+\[[^\]]+\]\s+[\w.]+\s+(.*)$'
+        )
+        # 旧格式：时间 级别 类名 消息
+        old_pattern = re.compile(
+            r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+[\w.]+\s+(.*)$'
+        )
+
+        # 依次尝试匹配
+        match = new_pattern.match(line)
+        if not match:
+            match = old_pattern.match(line)
+
+        if match:
+            timestamp = match.group(1)   # 如 [01:34:32.678]
+            level = match.group(2)       # 如 INF 或 DBG
+            message = match.group(3)  or ""  # 确保消息不为None
+
+            # 去掉毫秒，只保留 HH:MM:SS
+            time_part = timestamp[:9]  # 截取 [HH:MM:SS
+            return f"{time_part} {level}] {message}"
+        else:
+            # 无法匹配时原样返回（如续行或非标准行）
+            return line
+    
     def _extract_progress_info(self, line):
         """从日志行中提取进度信息 - 分開處理配置組進度和任務進度"""
         # 優先匹配配置組進度
