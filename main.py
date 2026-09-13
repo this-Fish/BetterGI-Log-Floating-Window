@@ -1,7 +1,17 @@
-# ### 1.4.6
-#   - **適配**
-#   - 適配BGI_0.63.0日志格式
+# ### 1.4.7
 
+# - **新增：坐标异常警告**
+#   - 最近两个任务都出现坐标异常时，窗口文字自动变为 `stale_color`（红色警告）
+#   - 同一任务内多次异常只计一次；任务重试会重置该任务的异常状态
+#   - 红色警告在出现正常运行任务后自动解除
+
+# - **新增：Alt+U 多组预设坐标**
+#   - `initial_x` / `initial_y` 支持逗号分隔多组值（如 `100,200,300`）
+#   - 每次按 Alt+U 依序切换到下一组坐标，到底后循环回第一组
+#   - 若 X 与 Y 数量不一致，取较短者配对
+
+# - **修复：切换样式时状态丢失**
+#   - 修复按 Alt+K 切换样式后，配置组名、任务名、进度信息被重置的问题
 
 __author__ = "蜜柑魚"
         
@@ -72,16 +82,20 @@ class ConfigLoader:
 # 日志文件目录路径（必须设置）
 # 请修改为您的BetterGI日志实际目录路径
 # 示例：log_path=C:\\Program Files\\BetterGI\\log
-# log_path=D:\\BetterGI\\BetterGI_060\\log
+# log_path=D:\\BetterGI\\log
 
 # 日志文件名前缀（通常不需要修改）
 log_filename_prefix=better-genshin-impact
 
-# 窗口预设位置X坐标
-initial_x=0
+# 窗口预设位置X坐标（支持逗号分隔多组，按 Alt+U 依序循环切换）
+# 单组示例：initial_x=100
+# 多组示例：initial_x=100,200,300
+initial_x=0,0
 
-# 窗口预设位置Y坐标
-initial_y=0
+# 窗口预设位置Y坐标（支持逗号分隔多组，按 Alt+U 依序循环切换）
+# 单组示例：initial_y=50
+# 多组示例：initial_y=50,80,120
+initial_y=0,0
 
 # 是否跳过调试日志 (true-跳过, false-显示)
 skip_debug_log=false
@@ -281,8 +295,8 @@ window_y=
             "font_weight": "bold",    # 字体粗细
             "max_height": 220,        # 窗口最大高度
             "max_width": 460,         # 窗口最大宽度
-            "initial_x": 0,           # 窗口预设位置X坐标
-            "initial_y": 0,           # 窗口预设位置Y坐标
+            "initial_x": "0,0",       # 窗口预设位置X坐标（支持逗号分隔多组）
+            "initial_y": "0,0",       # 窗口预设位置Y坐标（支持逗号分隔多组）
             "display_lines": 11,      # 显示行数
             "refresh_interval": 1000, # 刷新间隔(毫秒)
             "auto_wrap": False,         # 是否启用自动换行 - 主样式默认
@@ -496,8 +510,24 @@ window_y=
                 self.config[key] = float(value)
                 self.user_config[key] = float(value)
                 
+            elif key in ["initial_x", "initial_y"]:
+                # 支持逗号分隔的多组坐标值
+                value_stripped = value.strip() if value else ""
+                parsed = []
+                for v in value_stripped.split(','):
+                    v = v.strip()
+                    if v:
+                        try:
+                            parsed.append(int(v))
+                        except ValueError:
+                            logging.warning(f"第{line_num}行: {key} 的值 '{v}' 無法轉為整數，已跳過")
+                if not parsed:
+                    parsed = [0]
+                self.config[key] = parsed
+                self.user_config[key] = parsed
+
             elif key in ["font_size", "max_width", "max_height", 
-                    "initial_x", "initial_y", "display_lines", "refresh_interval"]:
+                    "display_lines", "refresh_interval"]:
                 self.config[key] = int(value)
                 self.user_config[key] = int(value)
                 
@@ -809,7 +839,7 @@ class GlobalShortcutManager:
                 keyboard.add_hotkey('alt+b', self._create_event_callback('backup'), suppress=True)  # 新增 Alt+B 立即备份
                 
                 self.hotkeys_registered = True
-                logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), Alt+B(立即备份), P(隐藏/显示)")
+                # logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), Alt+B(立即备份), P(隐藏/显示)")
                 return True
                 
             except Exception as register_error:
@@ -870,8 +900,8 @@ class GlobalShortcutManager:
                         break
                     
                     # 检查是否长时间没有成功事件（可能表示热键失效）
-                    if time.time() - last_success_time > 120:  # 2分钟没有成功事件
-                        logging.warning("长时间没有检测到快捷键事件，可能已失效")
+                    if time.time() - last_success_time > 300:  # 5分钟没有成功事件
+                        # logging.warning("长时间没有检测到快捷键事件，可能已失效")
                         break
                         
                     time.sleep(1)  # 减少CPU使用
@@ -1109,6 +1139,22 @@ class SmartLogReader:
         if self.backup_path:
             self._init_backup()
         self._update_log_file()  # 初始化日志文件
+
+        # 坐标异常模式列表
+        self.exception_patterns = [
+            "坐标获取异常，不记录运行数据",
+            "路线未正常完成、坐标获取异常或不处于主界面，不记录运行数据",
+            "距离异常，不记录数据",
+            "出现异常不在主界面，无法识别小地图坐标,不记录cd",
+            "坐标获取失败，不更新记录",
+            "出发点与终点过于接近，不记录运行数据",
+            "位置几乎未变化，不更新刷新时间",
+            "路线运行失败："
+        ]
+        # 任务异常历史记录（最近兩个任务）
+        self.task_exception_history = deque(maxlen=2)
+        # 另一個 # 判断是否最近兩个任务都有异常
+        self.coordinate_exception_warning = False
 
     def _check_log_path(self):
         """检查日志路径是否存在且有效"""
@@ -1619,31 +1665,54 @@ class SmartLogReader:
                     logging.warning(f"进度信息解析失败: {line}, 错误: {e}")
         return None
 
+
+    # 从日志行中提取任务名称，若无法提取则返回 None
+    def _extract_task_from_line(self, line):
+        for task_type, pattern in self.task_patterns.items():
+            if match := pattern.search(line):
+                task_name = match.group(1).strip()
+                # 特殊处理钓鱼任务（保持原名）
+                if task_type == "垂钓点":
+                    return f"{task_type}: {task_name}"
+                # 其他任务：去除路径和扩展名
+                known_extensions = ['.json', '.js']
+                if '/' in task_name or '\\' in task_name:
+                    base_name = os.path.basename(task_name)
+                    for ext in known_extensions:
+                        if base_name.endswith(ext):
+                            task_name = base_name[:-len(ext)]
+                            break
+                    else:
+                        task_name = base_name
+                else:
+                    for ext in known_extensions:
+                        if task_name.endswith(ext):
+                            task_name = task_name[:-len(ext)]
+                            break
+                return f"{task_type}: {task_name}"
+        return None
+
     def get_content(self):
-    
-        """安全获取日志内容 - 主入口方法"""
+        """安全获取日志内容 - 主入口方法（方案一：双循环修复异常归属）"""
         # 如果日志路径无效，返回错误信息
         if not self.log_path_valid:
-            return ["⚠️ 日志路径配置错误 ⚠️", "", "无法找到有效的日志文件，请：", 
-                    "1. 打开 config.txt 文件", "2. 找到 log_path 配置项", 
+            return ["⚠️ 日志路径配置错误 ⚠️", "", "无法找到有效的日志文件，请：",
+                    "1. 打开 config.txt 文件", "2. 找到 log_path 配置项",
                     "3. 取消注释并设置正确的路径", "4. 保存配置文件后重启程序", "",
                     "详细说明请查看 README.md", "", "按 Alt+P 关闭程序"]
-        
-        """獲取日誌內容時增加延遲，避免讀取部分寫入的內容"""
-        time.sleep(0.05)  # 50ms 延遲，確保日誌寫入完成
-        
+
+        time.sleep(0.05)  # 50ms 延迟，确保日志写入完成
+
         # 检查日期变更和文件更新
         self._detect_date_change()
         self._update_log_file()
-        
-        # 动态调整读取行数：当跳过调试日志时，需要读取更多行
+
+        # 动态调整读取行数
         if self.skip_debug_log:
-            # 增加读取行数以确保有足够的非调试日志
-            actual_read_lines = max(self.read_lines * 2, 400)  # 增加到400行
+            actual_read_lines = max(self.read_lines * 2, 400)
         else:
-            actual_read_lines = max(self.read_lines, 150)  # 最少150行
-        
-        # 获取日志内容，失败时使用缓存
+            actual_read_lines = max(self.read_lines, 150)
+
         full_content = self._tail_lines(actual_read_lines) or list(self._last_valid_content)
 
         # 合并跨行日志条目
@@ -1656,51 +1725,63 @@ class SmartLogReader:
         # 二次过滤确保无空行
         filtered_content = [line for line in merged_content if line.strip()]
 
-        # 处理文件空内容情况 & 处理全空情况
         if not filtered_content:
             if self._current_file.exists() and self._current_file.stat().st_size == 0:
                 filtered_content = ["-- 新日志文件已创建 --"]
             else:
                 filtered_content = ["-- 日志内容为空 --"]
 
-        # 保存当前任务状态用于切换检测
-        previous_task = self.current_task
+        # ---- 第一阶段：正序遍历，构建任务异常映射 ----
+        task_exception_map = {}        # task_name -> bool
+        current_task_name = None       # 当前正在执行的任务名（顺序扫描）
 
-        # 使用临时变量存储最新状态
+        for line in full_content:
+            # 检测任务开始行
+            task_name = self._extract_task_from_line(line)
+            if task_name:
+                current_task_name = task_name
+                # 每次任务开始，无论之前状态如何，都重置为 False（新实例）
+                task_exception_map[task_name] = False
+
+            # 检测异常（只要 current_task_name 存在就标记）
+            if current_task_name and any(pattern in line for pattern in self.exception_patterns):
+                task_exception_map[current_task_name] = True
+
+        # ---- 第二阶段：逆向扫描，提取最新状态（与原来一致） ----
+        previous_task = self.current_task
         latest_config = self.current_config
         latest_task = self.current_task
         latest_progress = self.current_progress  # 任務進度
         latest_config_progress = self.current_config_progress  # 配置組進度
 
-        # 优先搜索进度信息，然后才是任务和配置信息
+        # 搜索进度信息，然后才是任务和配置信息
         progress_found = False
         task_found = False
         config_found = False
         config_progress_found = False
-        
+
         # 逆向搜索日誌內容 - 從最新日誌開始搜索
         for line in reversed(full_content):
-            # 1. 優先搜索進度信息（最重要）
+            # 进度信息
             if not progress_found:
                 progress_info = self._extract_progress_info(line)
                 if progress_info:
-                    progress_type = progress_info.get("type")
-                    progress_value = progress_info.get("value")
-                    
-                    if progress_type == "config":
-                        # 這是配置組進度
-                        latest_config_progress = progress_value
+                    ptype = progress_info.get("type")
+                    pvalue = progress_info.get("value")
+                    if ptype == "config":
+                        # 配置組進度
+                        latest_config_progress = pvalue
                         # 配置組進度刷新時，歸零當前任務進度
                         latest_progress = "0/0"
                         config_progress_found = True
                         progress_found = True
-                    elif progress_type == "task":
-                        # 這是任務進度，只有在沒有找到配置組進度時才記錄
+                    elif ptype == "task":
+                        # 任務進度，只有在沒有找到配置組進度時才記錄
                         if not config_progress_found:
-                            latest_progress = progress_value
+                            latest_progress = pvalue
                             progress_found = True
-        
-            # 2. 然後搜索配置信息
+
+            # 配置组信息
             if not config_found:
                 if config_match := self.config_pattern.search(line):
                     config_name = config_match.group(1)
@@ -1708,68 +1789,56 @@ class SmartLogReader:
                     if "加载完成" in line or "开始执行" in line:
                         latest_config = config_name
                         config_found = True
-            
-            # 3. 最後搜索任務信息
+
+            # 任务信息
             if not task_found:
-                for task_type, pattern in self.task_patterns.items():
-                    if match := pattern.search(line):
-                        task_name = match.group(1).strip()
-                        
-                        # 特殊處理：對於釣魚點任務，保持完整的任務名稱
-                        if task_type == "垂钓点":
-                            # 釣魚點任務名稱保持原樣，不進行路徑和擴展名處理
-                            latest_task = f"{task_type}: {task_name}"
-                        else:
-                            # 常見擴展名列表（可根據需要增減）
-                            known_extensions = ['.json', '.js']
-                            
-                            # 其他任務類型：提取純文件名（不含路徑和擴展名）
-                            if '/' in task_name or '\\' in task_name:
-                                base_name = os.path.basename(task_name)
-                                # 檢查是否有已知擴展名
-                                for ext in known_extensions:
-                                    if base_name.endswith(ext):
-                                        task_name = base_name[:-len(ext)]
-                                        break
-                                else:
-                                    task_name = base_name  # 無已知擴展名，保留原文件名
-                            else:
-                                # 如果只有文件名且包含已知擴展名，移除擴展名；否則保留原樣
-                                for ext in known_extensions:
-                                    if task_name.endswith(ext):
-                                        task_name = task_name[:-len(ext)]
-                                        break
-                                # 若無匹配的已知擴展名，則保留原 task_name（包括其中的點號）
-                            
-                            latest_task = f"{task_type}: {task_name}"
-                        task_found = True
-                        break  # 一行通常只匹配一個任務類型
-            
-            # 如果所有信息都已找到，提前退出循环
+                task_name = self._extract_task_from_line(line)
+                if task_name:
+                    latest_task = task_name
+                    task_found = True
+
             if progress_found and task_found and config_found:
                 break
 
-        # 最终更新状态
+        # ---- 更新任务异常历史（基于正序映射） ----
+        # 如果发生了任务切换（且前一个任务是有效任务）
+        if previous_task != "无当前任务" and latest_task != previous_task:
+            # 从映射中获取上一个任务的异常状态，若映射中没有则视为 False
+            prev_exception = task_exception_map.get(previous_task, False)
+            self.task_exception_history.append(prev_exception)
+            logging.debug(f"任务切换/结束: {previous_task} -> {latest_task}, 异常标志: {prev_exception}")
+        elif previous_task == "无当前任务" and latest_task != "无当前任务":
+            # 新任务开始，无需操作（异常映射已包含新任务状态）
+            logging.debug(f"新任务开始: {latest_task}")
+
+        # 判断是否最近兩个任务都有异常
+        if len(self.task_exception_history) == 2 and all(self.task_exception_history):
+            self.coordinate_exception_warning = True
+            # logging.info("⚠️ 最近兩个任务均出现坐标异常，触发红色警告")
+        else:
+            self.coordinate_exception_warning = False
+
+        # ---- 更新当前状态 ----
         self.current_config = latest_config
         self.current_task = latest_task
         self.current_progress = latest_progress
-        self.current_config_progress = latest_config_progress  # 更新配置組進度
+        self.current_config_progress = latest_config_progress
 
-        # 检测任务切换频率
+        # 检测任务切换频率（仅用于高频警告）
         self._detect_task_switching(previous_task)
 
-        # 格式化日志行（只对要显示的内容进行格式化）
+        # ---- 格式化显示内容 ----
         display_content = filtered_content[-self.display_lines:] if len(filtered_content) > self.display_lines else filtered_content
-        
-        # 新增：如果启用自动换行，处理换行
+
+        # 如果启用自动换行，处理换行
         if self.auto_wrap:
             formatted_content = []
             for line in display_content:
-                formatted_line = self._format_log_line(line)  # 这里会调用我们修改的方法
-                wrapped_lines = self._wrap_text_line(formatted_line)  # 这里会调用我们修改的方法
+                formatted_line = self._format_log_line(line)
+                wrapped_lines = self._wrap_text_line(formatted_line)
                 formatted_content.extend(wrapped_lines)
 
-            # 重要：换行后可能行数超过 display_lines，需要再次限制
+            # 换行后可能行数超过 display_lines，需要再次限制
             if len(formatted_content) > self.display_lines:
                 formatted_content = formatted_content[-self.display_lines:]
         else:
@@ -1778,6 +1847,7 @@ class SmartLogReader:
         # 更新缓存为格式化后的内容
         if formatted_content:
             self._last_valid_content = deque(formatted_content, maxlen=100)
+
         return formatted_content
 
     def _get_font(self):
@@ -2277,8 +2347,38 @@ class FloatingLogViewer(tk.Tk):
         self.temp_message_color = self.backup_msg_color  # 使用配置的颜色
         
         # 窗口配置 - 使用保存的位置，如果 window_x/window_y 为 None 则使用 initial_x/initial_y
-        self.preset_x = config.get("initial_x", 0)
-        self.preset_y = config.get("initial_y", 0)
+        # 解析预设坐标点（支持多组）
+        def _to_int_list(val):
+            """把配置值统一解析成整数列表（兼容列表、整数、字符串）"""
+            if isinstance(val, list):
+                return [int(v) for v in val]
+            if isinstance(val, int):
+                return [val]
+            result = []
+            for v in str(val).split(','):
+                v = v.strip()
+                if v:
+                    try:
+                        result.append(int(v))
+                    except ValueError:
+                        pass
+            return result if result else [0]
+
+        _preset_xs = _to_int_list(config.get("initial_x", 0))
+        _preset_ys = _to_int_list(config.get("initial_y", 0))
+
+        # 取较短的长度配对
+        _pair_count = min(len(_preset_xs), len(_preset_ys))
+        if _pair_count == 0:
+            _preset_xs, _preset_ys = [0], [0]
+            _pair_count = 1
+
+        self.preset_points = [(_preset_xs[i], _preset_ys[i]) for i in range(_pair_count)]
+        # 向后兼容：保留单值 preset_x / preset_y（用于初始化窗口位置）
+        self.preset_x = self.preset_points[0][0]
+        self.preset_y = self.preset_points[0][1]
+        # 循环索引
+        self.current_preset_index = 0
         
         # 获取 window_x 和 window_y，如果为 None 则使用预设值
         window_x = config.get("window_x")
@@ -2889,32 +2989,47 @@ class FloatingLogViewer(tk.Tk):
         self.error_color = self.config.get("error_color", "#FF6B6B")
         self.warning_color = self.config.get("warning_color", "#FFD700")
         self.backup_msg_color = self.config.get("backup_msg_color", "#FFD700")
-        
+
         # 更新临时消息颜色
         self.temp_message_color = self.backup_msg_color
-        
+
         # 更新窗口属性
         self.max_width = self.config.get("max_width", 460)
         self.max_height = self.config.get("max_height", 220)
         self.display_lines = self.config.get("display_lines", 11)
         self.refresh_interval = self.config.get("refresh_interval", 1000)
-        
-        # 清理字体缓存
-        self.clear_font_cache()
-        
-        # 删除所有文本标签
-        self.text.tag_delete("config_header")
-        self.text.tag_delete("task_header")
-        self.text.tag_delete("high_freq_warning")
-        
-        # 更新窗口视觉设置
-        bg_color = self.config.get("bg_color", "#000000")
 
+        # 获取新的字体和换行配置
+        font_name = self.config.get("font_name", "Consolas")
+        font_size = self.config.get("font_size", 11)
+        font_weight = self.config.get("font_weight", "bold")
+        auto_wrap = self.config.get("auto_wrap", False)
+        dynamic_height = self.config.get("dynamic_height", False)
+
+        # 验证字体
+        available_fonts = tkfont.families()
+        if font_name not in available_fonts:
+            logging.warning(f"字体 '{font_name}' 不可用，使用默认字体")
+            font_name = "Consolas"
+
+        font_config = (font_name, font_size)
+        if font_weight != "normal":
+            font_config = (font_name, font_size, font_weight)
+
+        wrap_mode = tk.WORD if auto_wrap else tk.NONE
+
+        # ----- 更新 UI 组件 -----
+        # 清理字体缓存（UI和reader）
+        self.clear_font_cache()
+        if hasattr(self.reader, '_font_cache'):
+            self.reader._font_cache = None
+            self.reader._last_font_config = None
+
+        # 更新窗口背景和透明度
+        bg_color = self.config.get("bg_color", "#000000")
         # 先清除所有特殊属性
-        self.attributes('-transparentcolor', '')
-        
+        self.attributes('-transparentcolor', '') 
         if self.transparent_mode:
-            # 透明模式下使用 transparentcolor
             self.configure(bg=bg_color)
             self.attributes('-alpha', 1.0)
             self.attributes('-transparentcolor', bg_color)
@@ -2923,27 +3038,8 @@ class FloatingLogViewer(tk.Tk):
             self.configure(bg=bg_color)
             window_alpha = self.config.get("window_alpha", 0.7)
             self.attributes('-alpha', window_alpha)
-        
+
         # 更新文本组件
-        font_name = self.config.get("font_name", "Consolas")
-        font_size = self.config.get("font_size", 11)
-        font_weight = self.config.get("font_weight", "bold")
-        
-        # 验证字体是否存在
-        available_fonts = tkfont.families()
-        if font_name not in available_fonts:
-            logging.warning(f"字体 '{font_name}' 不可用，使用默认字体")
-            font_name = "Consolas"
-        
-        font_config = (font_name, font_size)
-        if font_weight != "normal":
-            font_config = (font_name, font_size, font_weight)
-            
-        # 根据换行设置决定 wrap 模式
-        auto_wrap = self.config.get("auto_wrap", False)
-        wrap_mode = tk.WORD if auto_wrap else tk.NONE
-        
-        # 更新文本组件背景和字体
         self.text.config(
             bg=bg_color,
             fg=self.normal_color,
@@ -2951,69 +3047,44 @@ class FloatingLogViewer(tk.Tk):
             height=self.display_lines,
             wrap=wrap_mode
         )
-        
+
         # 更新窗口尺寸
         current_x = self.winfo_x()
         current_y = self.winfo_y()
         self.geometry(f"{self.max_width}x{self.max_height}+{current_x}+{current_y}")
-        
-        # 重要：重新創建 SmartLogReader 以應用新的配置
-        initial_log_config = self.config.get_initial_log_config()
-        log_dir = initial_log_config["log_path"]
-        log_filename_prefix = initial_log_config["log_filename_prefix"]
-        log_path_configured = initial_log_config["log_path_configured"]
-        skip_debug_log = self.config.get("skip_debug_log", False)
-        auto_wrap = self.config.get("auto_wrap", False)
-        dynamic_height = self.config.get("dynamic_height", False)
-        
-        # 准备字体配置
-        font_config_dict = {
+
+        # ----- 更新 SmartLogReader 的配置（不重建对象） -----
+        # 保留 reader 的所有状态（当前任务、配置、进度等）
+        self.reader.auto_wrap = auto_wrap
+        self.reader.max_width = self.max_width
+        self.reader.display_lines = self.display_lines
+        self.reader.font_config = {
             "font_name": font_name,
             "font_size": font_size,
             "font_weight": font_weight
         }
-        
-        # 獲取備份相關配置
-        backup_path = self.config.get("backup_path", "")
-        backup_interval = self.config.get("backup_interval", 60)
-        backup_debug = self.config.get("backup_debug", False)
-        backup_enabled = self.config.get("backup_enabled", False)
-        backup_keep_days = self.config.get("backup_keep_days", 10)
-        backup_align_to_clock = self.config.get("backup_align_to_clock", False)
-        
-        # 重新創建 reader 以應用新的配置
-        self.reader = SmartLogReader(
-            log_dir, 
-            log_filename_prefix, 
-            log_path_configured, 
-            self.display_lines, 
-            skip_debug_log,
-            dynamic_height,
-            auto_wrap,
-            self.max_width,
-            font_config_dict,
-            backup_path,
-            backup_interval,
-            backup_debug,
-            backup_enabled,
-            backup_keep_days,
-            backup_align_to_clock
-        )
-        
-        # 強制刷新顯示
-        self._update_display()
-        
-        # 确保窗口完全刷新
-        self.update_idletasks()
-        self.update()
+        self.reader.dynamic_height = dynamic_height
+        # 清除字体缓存
+        self.reader._font_cache = None
+        self.reader._last_font_config = None
 
+        # 强制立即刷新显示（使用保留的状态）
+        self._force_immediate_display_update()
+        
     def _on_reset_position_shortcut(self, event=None):
-        """Alt+U 快捷键处理函数 - 重置窗口位置到预设位置"""
-        logging.info(f"检测到 Alt+U 快捷键，重置窗口位置到预设位置: ({self.preset_x}, {self.preset_y})")
-        self.geometry(f"+{self.preset_x}+{self.preset_y}")
-        # 立即保存重置后的位置到config.txt
-        self.config.save_window_state(self.preset_x, self.preset_y, self.transparent_mode, self.click_through, self.author_style2_active)
-
+        """Alt+U 快捷键处理函数 - 循环切换窗口位置到预设坐标列表"""
+        if not self.preset_points:
+            return
+        x, y = self.preset_points[self.current_preset_index]
+        logging.info(
+            f"Alt+U 切換到預設位置 #{self.current_preset_index + 1}/{len(self.preset_points)}: ({x}, {y})"
+        )
+        self.geometry(f"+{x}+{y}")
+        # 立即保存当前坐标
+        self.config.save_window_state(x, y, self.transparent_mode, self.click_through, self.author_style2_active)
+        # 循环递增索引
+        self.current_preset_index = (self.current_preset_index + 1) % len(self.preset_points)
+        
     def _on_close_shortcut(self, event=None):
         """Alt+P 快捷键处理函数"""
         logging.info("检测到 Alt+P 快捷键，关闭程序")
@@ -3138,8 +3209,10 @@ class FloatingLogViewer(tk.Tk):
                 prev_content_hash = self._get_content_hash(self._prev_content)
                 content_changed = content_hash != prev_content_hash
                 
-                # 确定文本颜色（优先级：高频警告 > 超时警告 > 正常）
-                if self.reader.high_frequency_warning:
+                # 确定文本颜色（优先级：坐标异常警告 > 高频切换警告 > 超时警告 > 正常）
+                if self.reader.coordinate_exception_warning:
+                    text_color = self.stale_color
+                elif self.reader.high_frequency_warning:
                     text_color = self.high_freq_color
                 elif stale_seconds > 60:  # 超过 60 秒无更新显示红色警告
                     text_color = self.stale_color
@@ -3175,6 +3248,8 @@ class FloatingLogViewer(tk.Tk):
                     status_lines = 3
                 if self.temp_message and time.time() < self.temp_message_expiry:
                     status_lines += 1
+                # 坐标异常警告行（如果有，会替换高频警告行？但我们不加额外行，只改颜色）
+                # 所以我们不增加状态行数，颜色已经整体变了
                 
                 # 获取状态行和任务行颜色 - 从当前配置中获取最新值
                 status_color = self.config.get("status_header_color", "#87CEFA")

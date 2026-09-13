@@ -11,11 +11,15 @@
 # 日志文件名前缀（通常不需要修改）
 log_filename_prefix=better-genshin-impact
 
-# 窗口预设位置X坐标
-initial_x=0
+# 窗口预设位置X坐标（支持逗号分隔多组，按 Alt+U 依序循环切换）
+# 单组示例：initial_x=100
+# 多组示例：initial_x=100,200,300
+initial_x=0,0
 
-# 窗口预设位置Y坐标
-initial_y=0
+# 窗口预设位置Y坐标（支持逗号分隔多组，按 Alt+U 依序循环切换）
+# 单组示例：initial_y=50
+# 多组示例：initial_y=50,80,120
+initial_y=0,0
 
 # 是否跳过调试日志 (true-跳过, false-显示)
 skip_debug_log=false
