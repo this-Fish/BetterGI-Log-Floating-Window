@@ -1,17 +1,7 @@
-# ### 1.4.7
-
-# - **新增：坐标异常警告**
-#   - 最近两个任务都出现坐标异常时，窗口文字自动变为 `stale_color`（红色警告）
-#   - 同一任务内多次异常只计一次；任务重试会重置该任务的异常状态
-#   - 红色警告在出现正常运行任务后自动解除
-
-# - **新增：Alt+U 多组预设坐标**
-#   - `initial_x` / `initial_y` 支持逗号分隔多组值（如 `100,200,300`）
-#   - 每次按 Alt+U 依序切换到下一组坐标，到底后循环回第一组
-#   - 若 X 与 Y 数量不一致，取较短者配对
-
-# - **修复：切换样式时状态丢失**
-#   - 修复按 Alt+K 切换样式后，配置组名、任务名、进度信息被重置的问题
+# ### 1.4.8
+#   - **新增：Alt+\ 精簡模式**
+#     - 只显示 [当前配置组] 与 [当前任务] 两行 与一行日志
+#     - 再次按 Alt+\ 恢復正常顯示
 
 __author__ = "蜜柑魚"
         
@@ -39,10 +29,10 @@ import ctypes
 try:
     import keyboard
     KEYBOARD_AVAILABLE = True
-    KEYBOARD_MODULE = keyboard  # 新增：保存模組引用
+    KEYBOARD_MODULE = keyboard  # 保存模組引用
 except ImportError:
     KEYBOARD_AVAILABLE = False
-    KEYBOARD_MODULE = None  # 新增：設置為 None
+    KEYBOARD_MODULE = None  # 設置為 None
     logging.warning("keyboard 庫未安裝，全局快捷鍵不可用")
     # 創建虛擬的 KeyboardEvent 類以避免 NameError
     class KeyboardEvent:
@@ -254,6 +244,10 @@ click_through=false
 # 程序根据Alt+K快捷键自动更新
 author_style2=false
 
+# 精簡模式狀態 (true-開啟, false-關閉)
+# 程序根据Alt+\快捷键自动更新
+minimal_mode=false
+
 # 窗口记忆位置X坐标
 # 程序自动保存窗口关闭时的位置
 window_x=
@@ -303,6 +297,7 @@ window_y=
             "transparent_mode": False, # 透明背景模式默认状态
             "click_through": False,   # 不可选中模式默认状态
             "author_style2": False,   # 仿BGI日志窗口样式默认状态
+            "minimal_mode": False,    # 精簡模式默认状态
             "window_x": None,         # 窗口X坐标
             "window_y": None,          # 窗口Y坐标
             "dynamic_height": False   # 动态调整窗口高度
@@ -530,8 +525,8 @@ window_y=
                     "display_lines", "refresh_interval"]:
                 self.config[key] = int(value)
                 self.user_config[key] = int(value)
-                
-            elif key in ["transparent_mode", "click_through", "author_style2", "skip_debug_log", "dynamic_height", "auto_wrap"]:
+
+            elif key in ["transparent_mode", "click_through", "author_style2", "skip_debug_log", "dynamic_height", "auto_wrap", "minimal_mode"]:
                 self.config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 self.user_config[key] = value.lower() in ('true', '1', 'yes', 'on')
                 
@@ -640,7 +635,7 @@ window_y=
         
         logging.info("恢复用户自定义样式 - 已应用用户config.txt配置")
 
-    def save_window_state(self, x, y, transparent_mode=False, click_through=False, author_style2=False):
+    def save_window_state(self, x, y, transparent_mode=False, click_through=False, author_style2=False, minimal_mode=False):
         """保存窗口位置和状态到config.txt"""
         try:
             # 读取现有配置文件内容
@@ -655,7 +650,8 @@ window_y=
                 "window_y": str(y),
                 "transparent_mode": str(transparent_mode).lower(),
                 "click_through": str(click_through).lower(),
-                "author_style2": str(author_style2).lower()
+                "author_style2": str(author_style2).lower(),
+                "minimal_mode": str(minimal_mode).lower()
             }
             
             # 构建新的配置内容
@@ -680,8 +676,8 @@ window_y=
                         line_without_newline = line.rstrip('\n')
                         if '#' in line_without_newline:
                             # 找到注释开始位置（在等号之后）
-                            hash_index = line_without_newline.find('#', equal_index)
                             equal_index = line_without_newline.find('=')
+                            hash_index = line_without_newline.find('#', equal_index)
                             if hash_index > equal_index:
                                 # 注释在等号后面，保留注释
                                 new_line = line_without_newline[:equal_index+1] + updates[key] + line_without_newline[hash_index:] + '\n'
@@ -717,8 +713,10 @@ window_y=
             self.config["transparent_mode"] = transparent_mode
             self.config["click_through"] = click_through
             self.config["author_style2"] = author_style2
+            self.config["minimal_mode"] = minimal_mode
+
             
-            logging.info(f"保存窗口位置到config.txt: ({x}, {y}), 透明模式: {transparent_mode}, 不可选中模式: {click_through}, 仿BGI日志窗口样式: {author_style2}")
+            logging.info(f"保存窗口位置到config.txt: ({x}, {y}), 透明模式: {transparent_mode}, 不可选中模式: {click_through}, 仿BGI日志窗口样式: {author_style2}, 精簡模式: {minimal_mode}")
             
         except Exception as e:
             logging.error(f"保存窗口位置到config.txt失败: {str(e)}")
@@ -750,7 +748,7 @@ class GlobalShortcutManager:
         self.hotkeys_registered = False
         self.last_health_check = time.time()
         self.health_check_interval = 30  # 每30秒检查一次健康状态
-        self._lock = threading.Lock()  # 新增
+        self._lock = threading.Lock() 
         # 使用全局的 keyboard 模組
         self.keyboard_module = KEYBOARD_MODULE
         
@@ -774,7 +772,7 @@ class GlobalShortcutManager:
             
             # 在主线程中处理事件
             self.root.after(100, self._process_events)
-            # 新增健康检查定时器
+            # 健康检查定时器
             self.root.after(30000, self._health_check)  # 30秒后开始健康检查
             logging.info("全局快捷键监听已启动")
         except Exception as e:
@@ -836,10 +834,11 @@ class GlobalShortcutManager:
                 keyboard.add_hotkey('alt+i', self._create_event_callback('toggle_transparent'), suppress=True)
                 keyboard.add_hotkey('alt+n', self._create_event_callback('toggle_click_through'), suppress=True)
                 keyboard.add_hotkey('alt+k', self._create_event_callback('toggle_second_style'), suppress=True)
-                keyboard.add_hotkey('alt+b', self._create_event_callback('backup'), suppress=True)  # 新增 Alt+B 立即备份
+                keyboard.add_hotkey('alt+b', self._create_event_callback('backup'), suppress=True)  # Alt+B 立即备份
+                keyboard.add_hotkey('alt+\\', self._create_event_callback('toggle_minimal'), suppress=True)  # Alt+\ 精簡模式
                 
                 self.hotkeys_registered = True
-                # logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), Alt+B(立即备份), P(隐藏/显示)")
+                # logging.info("全局快捷键注册完成: Alt+P(关闭), Alt+U(重置位置), Alt+I(透明模式), Alt+N(不可选中), Alt+K(第二样式), Alt+B(立即备份), Alt+\\(精簡模式), P(隐藏/显示)")
                 return True
                 
             except Exception as register_error:
@@ -1001,10 +1000,12 @@ class GlobalShortcutManager:
                 self.root._on_click_through_toggle_shortcut()
             elif event == 'toggle_second_style':
                 self.root._on_second_style_toggle_shortcut()
-            elif event == 'toggle_visibility':  # 新增：处理隐藏/显示事件
+            elif event == 'toggle_visibility':  # 处理隐藏/显示事件
                 self.root._on_toggle_visibility_shortcut()
-            elif event == 'backup':  # 新增：处理立即备份事件
+            elif event == 'backup':  # 处理立即备份事件
                 self.root._on_backup_shortcut()
+            elif event == 'toggle_minimal':  # 处理精簡模式事件
+                self.root._on_minimal_toggle_shortcut()
                 
         except Exception as e:
             logging.error(f"处理快捷键事件失败: {str(e)}")
@@ -1056,7 +1057,7 @@ class SmartLogReader:
         self.backup_timer = None
         self.backup_thread = None
         
-        # 新增：换行相关配置
+        # 换行相关配置
         self.auto_wrap = auto_wrap
         self.max_width = max_width
         self.font_config = font_config  # 字体配置
@@ -1065,8 +1066,8 @@ class SmartLogReader:
         self._font_cache = None
         self._last_font_config = None
         
-        # 新增：讀取行數（display_lines*2(其中1行為空格)行用於分析）
-        # 优化：当跳过调试日志时，需要读取更多行以确保有足够的非调试日志显示
+        # 讀取行數（display_lines*2(其中1行為空格)行用於分析）
+        # 当跳过调试日志时，需要读取更多行以确保有足够的非调试日志显示
         self.read_lines = max(display_lines * 2, 100) if skip_debug_log else display_lines * 3
         self.display_lines = display_lines  # 保存顯示行數
         self.dynamic_height=dynamic_height
@@ -1084,7 +1085,7 @@ class SmartLogReader:
         
         # 任務進度信息 - 分開處理
         self.current_progress = "0/0"  # 任務進度
-        self.current_config_progress = "0/0"  # 配置組進度 - 新增
+        self.current_config_progress = "0/0"  # 配置組進度
         self.task_progress = {}  # 任務進度緩存
         
         # 任务切换频率监测
@@ -1127,11 +1128,11 @@ class SmartLogReader:
             "垂钓点进度": re.compile(r'当前垂钓点:[^(]+\(进度:\s*(\d+)/(\d+)\)'),  # 垂钓点进度
             "产出进度": re.compile(r'当前产出(?:（.*?）)?：\s*(\d+)(?:/(\d+))?\s*个'),
             "运行时间进度": re.compile(r'当前运行时间：([\d.]+)/(\d+)分钟'),  # 保持不变，只匹配有总时间的情况
-            # 新增：循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
+            # 循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
             "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环'),
             "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+'),
             "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
-            # 新增狗粮进度
+            # 狗粮进度
             "狗粮进度": re.compile(r'(?:当前进度：)?.*?为.+?第\s*(\d+)/(\d+)\s*个'),
         }
 
@@ -1149,7 +1150,8 @@ class SmartLogReader:
             "坐标获取失败，不更新记录",
             "出发点与终点过于接近，不记录运行数据",
             "位置几乎未变化，不更新刷新时间",
-            "路线运行失败："
+            "路线运行失败：",
+            "可能发生了错误，不写记录"
         ]
         # 任务异常历史记录（最近兩个任务）
         self.task_exception_history = deque(maxlen=2)
@@ -1426,7 +1428,7 @@ class SmartLogReader:
         new_base_task = get_base_task_name(new_task)
         current_base_task = get_base_task_name(self.current_task)
             
-        # 新增：忽略从"无当前任务"到实际任务的切换（这是正常开始）
+        # 忽略从"无当前任务"到实际任务的切换（这是正常开始）
         # 也忽略从实际任务到"无当前任务"的切换（这是正常结束）
         should_record = False
         if (new_base_task != current_base_task and 
@@ -1598,7 +1600,7 @@ class SmartLogReader:
                             "type": "task",
                             "value": f"{current}/{total}"
                         }
-                    # 新增：循环执行进度格式
+                    # 循环执行进度格式
                     elif progress_type == "循环执行进度" and len(groups) >= 3:
                         item_name, current, total = groups[:3]
                         return {
@@ -2275,7 +2277,7 @@ class FloatingLogViewer(tk.Tk):
         log_path_configured = initial_log_config["log_path_configured"]
         display_lines = config.get("display_lines", 11)
         skip_debug_log = config.get("skip_debug_log", False)
-        auto_wrap = config.get("auto_wrap", False)  # 新增
+        auto_wrap = config.get("auto_wrap", False)
         dynamic_height = config.get("dynamic_height", False)
         max_width = config.get("max_width", 460)
         
@@ -2304,12 +2306,12 @@ class FloatingLogViewer(tk.Tk):
             auto_wrap,
             max_width,
             font_config,
-            backup_path,          # 新增
-            backup_interval,      # 新增
-            backup_debug,         # 新增
-            backup_enabled,        # 新增
-            backup_keep_days,      # 新增
-            backup_align_to_clock=config.get("backup_align_to_clock", False)  # 新增
+            backup_path,
+            backup_interval,
+            backup_debug,
+            backup_enabled,
+            backup_keep_days,
+            backup_align_to_clock=config.get("backup_align_to_clock", False)
         )
         self._prev_content = []  # 上一次显示的内容
         self.last_change_time = datetime.now()  # 最后内容变更时间
@@ -2318,9 +2320,9 @@ class FloatingLogViewer(tk.Tk):
         self.normal_color = config.get("normal_color", "#00FF00")
         self.stale_color = config.get("stale_color", "#FF0000")
         self.high_freq_color = config.get("high_freq_color", "#FFA500")
-        self.debug_color = config.get("debug_color", "#808080")  # 新增
-        self.error_color = config.get("error_color", "#FF6B6B")  # 新增
-        self.warning_color = config.get("warning_color", "#FFD700")  # 新增
+        self.debug_color = config.get("debug_color", "#808080")
+        self.error_color = config.get("error_color", "#FF6B6B")
+        self.warning_color = config.get("warning_color", "#FFD700")
         self.backup_msg_color = config.get("backup_msg_color", "#FFD700")  # 备份临时消息颜色
         
         # 性能优化：字体缓存
@@ -2337,11 +2339,14 @@ class FloatingLogViewer(tk.Tk):
         self.click_through = config.get("click_through", False)  # 从配置读取不可选中模式状态
         self.author_style2_active = config.get("author_style2", False)  # 从配置读取仿BGI日志窗口样式状态
         
-        # 新增：窗口隐藏状态
+        # 窗口隐藏状态
         self.is_hidden = False  # 窗口是否隐藏
         self.hidden_message = "日志悬浮窗 - 停用中"  # 隐藏时显示的文字
 
-        # 新增：临时消息（类似警告行）
+        # 精簡模式狀態（從配置讀取）
+        self.minimal_mode = config.get("minimal_mode", False)  # 精簡模式
+
+        # 临时消息（类似警告行）
         self.temp_message = None          # 当前临时消息文字
         self.temp_message_expiry = 0      # 过期时间戳（time.time()）
         self.temp_message_color = self.backup_msg_color  # 使用配置的颜色
@@ -2411,7 +2416,7 @@ class FloatingLogViewer(tk.Tk):
         # 初始化界面
         self._setup_window()
         self._setup_ui()
-        self._setup_keyboard_shortcuts()  # 新增：设置键盘快捷键
+        self._setup_keyboard_shortcuts()  # 设置键盘快捷键
         self._start_auto_refresh()
         
         # 确保清理可能残留的全局快捷键
@@ -2426,7 +2431,7 @@ class FloatingLogViewer(tk.Tk):
         self.shortcut_manager = GlobalShortcutManager(self)
         self.shortcut_manager.start_listening()
         
-        # 新增：延迟检查快捷键状态，确保备用方案生效
+        # 延迟检查快捷键状态，确保备用方案生效
         self.after(2000, self._check_shortcut_status)  # 2秒后检查
     
     def _check_shortcut_status(self):
@@ -2555,7 +2560,7 @@ class FloatingLogViewer(tk.Tk):
         
         # 根据换行设置决定 wrap 模式
         auto_wrap = self.config.get("auto_wrap", False)
-        wrap_mode = tk.WORD if auto_wrap else tk.NONE  # 新增
+        wrap_mode = tk.WORD if auto_wrap else tk.NONE  
         
         self.text = tk.Text(
             self,
@@ -2592,12 +2597,14 @@ class FloatingLogViewer(tk.Tk):
         self.bind("<Alt-KeyPress-N>", self._on_click_through_toggle_shortcut)
         self.bind("<Alt-KeyPress-k>", self._on_second_style_toggle_shortcut)
         self.bind("<Alt-KeyPress-K>", self._on_second_style_toggle_shortcut)
-        # 新增：P键隐藏/显示窗口（只在窗口内生效）
+        # P键隐藏/显示窗口（只在窗口内生效）
         self.bind("<KeyPress-p>", self._on_toggle_visibility_shortcut)
         self.bind("<KeyPress-P>", self._on_toggle_visibility_shortcut)
-        # 新增：Alt+B 立即备份
+        # Alt+B 立即备份
         self.bind("<Alt-KeyPress-b>", self._on_backup_shortcut)
         self.bind("<Alt-KeyPress-B>", self._on_backup_shortcut)
+        # Alt+\ 精簡模式（窗口内快捷键）
+        self.bind("<Alt-KeyPress-backslash>", self._on_minimal_toggle_shortcut)
             
         # 簡單的日誌記錄，不依賴於 hotkeys_registered
         if KEYBOARD_AVAILABLE:
@@ -2641,6 +2648,22 @@ class FloatingLogViewer(tk.Tk):
         except Exception as e:
             logging.error(f"手动备份异常: {str(e)}")
             self.show_temp_message("❌ 备份失败", 2)
+
+    def _on_minimal_toggle_shortcut(self, event=None):
+        """Alt+\\ 快捷键处理函数 - 切换精簡模式"""
+        try:
+            self.minimal_mode = not self.minimal_mode
+            # 同步更新内存中的配置（關閉程序時會一起寫入 config.txt）
+            self.config.config["minimal_mode"] = self.minimal_mode
+            self.config.user_config["minimal_mode"] = self.minimal_mode
+            if self.minimal_mode:
+                logging.info("進入精簡模式 - 只顯示配置組與任務行")
+            else:
+                logging.info("退出精簡模式 - 恢復正常顯示")
+            # 強制立即刷新顯示
+            self._force_immediate_display_update()
+        except Exception as e:
+            logging.error(f"切換精簡模式失敗: {str(e)}")
 
     def _on_toggle_visibility_shortcut(self, event=None):
         """P键快捷键处理函数 - 切换窗口显示/隐藏"""
@@ -3081,7 +3104,7 @@ class FloatingLogViewer(tk.Tk):
         )
         self.geometry(f"+{x}+{y}")
         # 立即保存当前坐标
-        self.config.save_window_state(x, y, self.transparent_mode, self.click_through, self.author_style2_active)
+        self.config.save_window_state(x, y, self.transparent_mode, self.click_through, self.author_style2_active, self.minimal_mode)
         # 循环递增索引
         self.current_preset_index = (self.current_preset_index + 1) % len(self.preset_points)
         
@@ -3125,6 +3148,10 @@ class FloatingLogViewer(tk.Tk):
         
         # 检查是否是错误信息
         if content and "日志路径配置错误" in content[0]:
+            return hash(tuple(content))
+        
+        # 精簡模式：比較全部顯示內容（2 行狀態 + 最多 1 行日誌）
+        if self.minimal_mode:
             return hash(tuple(content))
         
         # 动态确定状态行数
@@ -3185,22 +3212,27 @@ class FloatingLogViewer(tk.Tk):
                     task_display
                 ] + new_content
 
-                # 添加高频切换警告状态行
-                if self.reader.high_frequency_warning:
-                    display_content.insert(0, f"⚠️ 任务切换过于频繁 ({len(self.reader.task_switch_times)}次/分钟) ⚠️")
-                
-                # 新增：如果存在临时消息且未过期，插入到最顶部
-                if self.temp_message and time.time() < self.temp_message_expiry:
-                    display_content.insert(0, self.temp_message)
-
-                # 如果启用自动换行，处理状态行的截断
-                if self.config.get("auto_wrap", False):
-                    display_content = self._truncate_status_lines(display_content)
+                # 精簡模式只保留兩行狀態
+                if self.minimal_mode:
+                    last_log = new_content[-1:] if new_content else []
+                    display_content = [config_display, task_display] + last_log
+                else:
+                    # 添加高频切换警告状态行
+                    if self.reader.high_frequency_warning:
+                        display_content.insert(0, f"⚠️ 任务切换过于频繁 ({len(self.reader.task_switch_times)}次/分钟) ⚠️")
                     
-                # 限制最多显示行数
-                max_display_lines = self.display_lines + 2  # 加上 2 行状态行
-                if len(display_content) > max_display_lines:
-                    display_content = display_content[:max_display_lines]
+                    # 如果存在临时消息且未过期，插入到最顶部
+                    if self.temp_message and time.time() < self.temp_message_expiry:
+                        display_content.insert(0, self.temp_message)
+
+                    # 如果启用自动换行，处理状态行的截断
+                    if self.config.get("auto_wrap", False):
+                        display_content = self._truncate_status_lines(display_content)
+                        
+                    # 限制最多显示行数
+                    max_display_lines = self.display_lines + 2  # 加上 2 行状态行
+                    if len(display_content) > max_display_lines:
+                        display_content = display_content[:max_display_lines]
 
                 # 判断是否需要更新
                 stale_seconds = (current_time - self.last_change_time).total_seconds()
@@ -3243,11 +3275,15 @@ class FloatingLogViewer(tk.Tk):
             # 根据状态行数动态计算索引
             if not (display_content and "日志路径配置错误" in display_content[0]):
                 # 动态计算状态行数
-                status_lines = 2
-                if self.reader.high_frequency_warning:
-                    status_lines = 3
-                if self.temp_message and time.time() < self.temp_message_expiry:
-                    status_lines += 1
+                # 精簡模式狀態行固定為 2 行
+                if self.minimal_mode:
+                    status_lines = 2
+                else:
+                    status_lines = 2
+                    if self.reader.high_frequency_warning:
+                        status_lines = 3
+                    if self.temp_message and time.time() < self.temp_message_expiry:
+                        status_lines += 1
                 # 坐标异常警告行（如果有，会替换高频警告行？但我们不加额外行，只改颜色）
                 # 所以我们不增加状态行数，颜色已经整体变了
                 
@@ -3269,27 +3305,31 @@ class FloatingLogViewer(tk.Tk):
                 self.text.tag_delete("high_freq_warning")
                 self.text.tag_delete("temp_message")
                 
-                # 临时消息行样式（最顶部）
-                if self.temp_message and time.time() < self.temp_message_expiry:
-                    self.text.tag_configure("temp_message", foreground=self.temp_message_color)
-                    self.text.tag_add("temp_message", "1.0", "1.end")
-                    # 如果还有高频警告，它的行索引会变成第2行
-                    warning_line_offset = 1
+                # 精簡模式下不插入臨時消息行與高頻警告行，配置組行固定為第1行
+                if self.minimal_mode:
+                    config_line = 1
                 else:
-                    warning_line_offset = 0
-                
-                # 高频警告行样式
-                if self.reader.high_frequency_warning:
-                    warning_line = 1 + warning_line_offset
-                    self.text.tag_configure(
-                        "high_freq_warning",
-                        foreground=self.high_freq_color,
-                        font=(font_name, font_size, font_weight)
-                    )
-                    self.text.tag_add("high_freq_warning", f"{warning_line}.0", f"{warning_line}.end")
-                    config_line = warning_line + 1
-                else:
-                    config_line = 1 + warning_line_offset
+                    # 临时消息行样式（最顶部）
+                    if self.temp_message and time.time() < self.temp_message_expiry:
+                        self.text.tag_configure("temp_message", foreground=self.temp_message_color)
+                        self.text.tag_add("temp_message", "1.0", "1.end")
+                        # 如果还有高频警告，它的行索引会变成第2行
+                        warning_line_offset = 1
+                    else:
+                        warning_line_offset = 0
+
+                    # 高频警告行样式
+                    if self.reader.high_frequency_warning:
+                        warning_line = 1 + warning_line_offset
+                        self.text.tag_configure(
+                            "high_freq_warning",
+                            foreground=self.high_freq_color,
+                            font=(font_name, font_size, font_weight)
+                        )
+                        self.text.tag_add("high_freq_warning", f"{warning_line}.0", f"{warning_line}.end")
+                        config_line = warning_line + 1
+                    else:
+                        config_line = 1 + warning_line_offset
                 
                 # 配置组行样式
                 self.text.tag_configure(
@@ -3361,11 +3401,14 @@ class FloatingLogViewer(tk.Tk):
         total_lines = int(self.text.index('end-1c').split('.')[0])
         
         #  计算状态行数（可能包含高頻警告行和临时消息）
-        status_lines = 2  # 默认：配置组行 + 任务行
-        if self.reader.high_frequency_warning:
-            status_lines = 3  # 高频警告行 + 配置组行 + 任务行
-        if self.temp_message and time.time() < self.temp_message_expiry:
-            status_lines += 1  # 临时消息行
+        if self.minimal_mode:
+            status_lines = 2  # 精簡模式：只有配置組行 + 任務行
+        else:
+            status_lines = 2  # 默认：配置组行 + 任务行
+            if self.reader.high_frequency_warning:
+                status_lines = 3  # 高频警告行 + 配置组行 + 任务行
+            if self.temp_message and time.time() < self.temp_message_expiry:
+                status_lines += 1  # 临时消息行
         
         # 从状态行之后开始检查不同级别的日志
         for tag_name in list(self.text.tag_names()):
@@ -3556,9 +3599,9 @@ class FloatingLogViewer(tk.Tk):
         # 使用当前窗口位置
         current_x = self.winfo_x()
         current_y = self.winfo_y()
-        self.config.save_window_state(current_x, current_y, self.transparent_mode, self.click_through, self.author_style2_active)
-        logging.info(f"程序关闭，保存窗口位置到config.txt: ({current_x}, {current_y}), 透明模式: {self.transparent_mode}, 不可选中模式: {self.click_through}, 仿BGI日志窗口样式: {self.author_style2_active}")
-        
+        self.config.save_window_state(current_x, current_y, self.transparent_mode, self.click_through, self.author_style2_active, self.minimal_mode)
+        logging.info(f"程序关闭，保存窗口位置到config.txt: ({current_x}, {current_y}), 透明模式: {self.transparent_mode}, 不可选中模式: {self.click_through}, 仿BGI日志窗口样式: {self.author_style2_active}, 精簡模式: {self.minimal_mode}")
+
         self.monitor_running = False
         super().destroy()
 
