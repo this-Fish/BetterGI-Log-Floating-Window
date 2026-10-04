@@ -178,6 +178,10 @@ click_through=false
 # 程序根据Alt+K快捷键自动更新
 author_style2=false
 
+# 精簡模式狀態 (true-開啟, false-關閉)
+# 程序根据Alt+\快捷键自动更新
+minimal_mode=false
+
 # 窗口记忆位置X坐标
 # 程序自动保存窗口关闭时的位置
 window_x=
