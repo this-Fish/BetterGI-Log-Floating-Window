@@ -1,7 +1,8 @@
-# ### 1.4.8
-#   - **新增：Alt+\ 精簡模式**
-#     - 只显示 [当前配置组] 与 [当前任务] 两行 与一行日志
-#     - 再次按 Alt+\ 恢復正常顯示
+# ### 1.4.9
+#   - 新增三色指示灯（按 P 隐藏后显示）
+#   - 隐藏状态不再读取整份日志
+#   - 正则表达式预编译
+#   - 修复高频切换状态超时检查的 TypeError
 
 __author__ = "蜜柑魚"
         
@@ -24,6 +25,12 @@ import tkinter.font as tkfont
 
 # Windows API
 import ctypes
+
+
+# 幾秒沒有新日誌算「停滯」（文字轉紅、指示燈亮紅燈關綠燈）
+# 主顯示的超時變色與指示燈的停滯判定共用這一個值，改這裡兩邊一起變
+STALE_SECONDS = 60
+
 
 # 鍵盤全局快捷鍵
 try:
@@ -228,6 +235,34 @@ style2_refresh_interval=500
 style2_auto_wrap=true
 
 # =============================================
+# 指示燈配置段 - 按 P 隱藏後顯示的綠/黃/紅三色燈
+# =============================================
+# 燈泡直徑（像素）
+led_size=16
+
+# 燈泡之間的水平間距（像素）
+led_gap=14
+
+# 視窗四周留白（像素）
+led_padding=12
+
+# 指示燈刷新間隔（毫秒，最小 200）
+led_refresh_interval=1000
+
+# 燈亮時的顏色（綠 / 黃 / 紅）
+led_green_on_color=#00FF00
+led_yellow_on_color=#FFCC00
+led_red_on_color=#FF0000
+
+# 燈熄時的顏色（暗綠 / 暗黃 / 暗紅）
+led_green_off_color=#004400
+led_yellow_off_color=#443300
+led_red_off_color=#440000
+
+# 指示燈視窗背景色
+led_bg_color=#000000
+
+# =============================================
 [程序自动管理配置段]
 # 注意：以下配置由程序自动管理，请勿手动修改
 # =============================================
@@ -300,7 +335,19 @@ window_y=
             "minimal_mode": False,    # 精簡模式默认状态
             "window_x": None,         # 窗口X坐标
             "window_y": None,          # 窗口Y坐标
-            "dynamic_height": False   # 动态调整窗口高度
+            "dynamic_height": False,  # 动态调整窗口高度
+            # ---- 三色指示燈（按 P 隱藏後顯示）----
+            "led_size": 16,           # 燈泡直徑（像素）
+            "led_gap": 14,            # 燈泡間距（像素）
+            "led_padding": 12,        # 四周留白（像素）
+            "led_refresh_interval": 1000,  # 指示燈刷新間隔（毫秒）
+            "led_green_on_color": "#00FF00",
+            "led_yellow_on_color": "#FFCC00",
+            "led_red_on_color": "#FF0000",
+            "led_green_off_color": "#004400",
+            "led_yellow_off_color": "#443300",
+            "led_red_off_color": "#440000",
+            "led_bg_color": "#000000"
         }
         
         # 第二样式配置
@@ -522,7 +569,8 @@ window_y=
                 self.user_config[key] = parsed
 
             elif key in ["font_size", "max_width", "max_height", 
-                    "display_lines", "refresh_interval"]:
+                    "display_lines", "refresh_interval",
+                    "led_size", "led_gap", "led_padding", "led_refresh_interval"]:
                 self.config[key] = int(value)
                 self.user_config[key] = int(value)
 
@@ -1021,6 +1069,28 @@ class GlobalShortcutManager:
         logging.info("全局快捷键监听已停止")
 
 class SmartLogReader:
+    # 類級別預編譯正則（所有實例共享，避免每次調用重複編譯；re.Pattern 線程安全）
+    # 判斷一行是否為新日誌條目的開頭（以時間戳開頭）
+    _RE_LOG_START = re.compile(r'\[\d{2}:\d{2}:\d{2}\.\d{3}\]')
+    # 新格式：時間 級別 [額外標識] 類名 消息
+    _RE_LOG_FORMAT_NEW = re.compile(
+        r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+\[[^\]]+\]\s+[\w.]+\s+(.*)$'
+    )
+    # 舊格式：時間 級別 類名 消息
+    _RE_LOG_FORMAT_OLD = re.compile(
+        r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+[\w.]+\s+(.*)$'
+    )
+    # 配置組任務執行進度
+    _RE_CONFIG_PROGRESS = re.compile(r'(?:一条龙任务执行|配置组任务执行)[：:]\s*(\d+)/(\d+)')
+
+    # 任務名稱基礎部分提取用（去除進度後綴），避免每次刷新重建列表
+    _RE_BASE_TASK_PATTERNS = (
+        re.compile(r'(.+?) \[\d+/\d+\]'),
+        re.compile(r'(.+?) \(\d+/\d+\)'),
+        re.compile(r'(.+?) \d+/\d+个'),
+        re.compile(r'(.+?) 第 \d+/\d+ 次循环'),
+    )
+
     def __init__(self, log_dir, log_filename_prefix, log_path_configured, display_lines=11, 
                  skip_debug_log=False, dynamic_height=False, auto_wrap=False, 
                  max_width=460, font_config=None, backup_path="", backup_interval=60, 
@@ -1109,9 +1179,9 @@ class SmartLogReader:
         )
         
         # 日志格式处理正则表达式 - 提取时间戳、级别和消息
-        self.log_format_pattern = re.compile(
-            r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+[\w\.]+\s*(.*)$'
-        )
+        # self.log_format_pattern = re.compile(
+        #     r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+[\w\.]+\s*(.*)$'
+        # )
         
         # 进度信息正则表达式
         self.progress_patterns = {
@@ -1131,7 +1201,7 @@ class SmartLogReader:
             # 循环执行进度格式 - 匹配 "正在执行 夏栎木 第 9/56 次循环"
             "循环执行进度": re.compile(r'正在执行\s+([^\s]+)\s+第\s*(\d+)/(\d+)\s*次循环'),
             "F2": re.compile(r'当前进度：\s*=+\s*第\s*(\d+)/(\d+)\s*轮\s*=+'),
-            "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
+            # "配置组任务执行进度": re.compile(r'(?:配置组任务执行|一条龙任务执行)[：:]\s*(\d+)/(\d+)'),
             # 狗粮进度
             "狗粮进度": re.compile(r'(?:当前进度：)?.*?为.+?第\s*(\d+)/(\d+)\s*个'),
         }
@@ -1334,7 +1404,7 @@ class SmartLogReader:
 
     def _is_log_start(self, line):
         """检测行是否以时间戳开头 - 判断是否为新的日志条目"""
-        return bool(re.match(r'\[\d{2}:\d{2}:\d{2}\.\d{3}\]', line))
+        return bool(self._RE_LOG_START.match(line))
 
     def _tail_lines(self, lines=50):
         """高效获取文件尾部内容 - 确保读取完整的行"""
@@ -1399,38 +1469,32 @@ class SmartLogReader:
         
         return filtered_lines
 
+    @staticmethod
+    def _get_base_task_name(task_str):
+        """從任務字符串中提取基礎任務名稱（去除進度部分）"""
+        if "无当前任务" in task_str:
+            return "无当前任务"
+
+        for pattern in SmartLogReader._RE_BASE_TASK_PATTERNS:
+            match = pattern.match(task_str)
+            if match:
+                return match.group(1).strip()
+
+        return task_str
+
     def _detect_task_switching(self, new_task):
         """检测任务切换频率 - 只在实际任务名称变化时记录（修复版本）"""
         now = time.time()
         
-        # 获取任务名称的基础部分（去除进度信息）
-        def get_base_task_name(task_str):
-            """从任务字符串中提取基础任务名称（去除进度部分）"""
-            if "无当前任务" in task_str:
-                return "无当前任务"
-            
-            # 如果任务字符串包含进度格式，提取前面的部分
-            progress_patterns = [
-                r'(.+?) \[\d+/\d+\]',
-                r'(.+?) \(\d+/\d+\)',
-                r'(.+?) \d+/\d+个',
-                r'(.+?) 第 \d+/\d+ 次循环'
-            ]
-            
-            for pattern in progress_patterns:
-                match = re.match(pattern, task_str)
-                if match:
-                    return match.group(1).strip()
-            
-            return task_str
-        
         # 只在任务实际变化时记录（排除进度更新）
-        new_base_task = get_base_task_name(new_task)
-        current_base_task = get_base_task_name(self.current_task)
-            
+        # 使用類級別預編譯正則與靜態方法，避免每次調用重建閉包與列表
+        new_base_task = self._get_base_task_name(new_task)
+        current_base_task = self._get_base_task_name(self.current_task)
+        
         # 忽略从"无当前任务"到实际任务的切换（这是正常开始）
         # 也忽略从实际任务到"无当前任务"的切换（这是正常结束）
         should_record = False
+        
         if (new_base_task != current_base_task and 
             new_base_task != "无当前任务" and 
             current_base_task != "无当前任务"):
@@ -1494,12 +1558,14 @@ class SmartLogReader:
             # 输出当前切换队列状态
             logging.debug(f"切换队列状态: {current_switches} 次记录")
         # 检查高频状态是否已结束（超过90秒无新警告）
-        if self.high_frequency_warning and (now - self.high_frequency_start > 90):
+        if self.high_frequency_warning and self.high_frequency_start is not None \
+                and (now - self.high_frequency_start > 90):
             self.high_frequency_warning = False
             logging.info("⏰ 高频任务切换状态超时自动结束")
             
         # 记录基础任务名称用于调试
-        logging.debug(f"任务基础名称: 当前='{current_base_task}', 新='{new_base_task}', 类型={switch_type}")
+        logging.debug("任务基础名称: 当前='%s', 新='%s', 类型=%s",
+              current_base_task, new_base_task, switch_type)
     
     #  兼容BGI_0.63.0版本新日志格式
     def _format_log_line(self, line):
@@ -1511,19 +1577,10 @@ class SmartLogReader:
                 logging.warning(f"无法格式化非字符串日志行: {type(line)}，错误: {str(e)}")
                 return str(line)
 
-        # 新格式：时间 级别 [额外标识] 类名 消息
-        new_pattern = re.compile(
-            r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+\[[^\]]+\]\s+[\w.]+\s+(.*)$'
-        )
-        # 旧格式：时间 级别 类名 消息
-        old_pattern = re.compile(
-            r'^(\[\d{2}:\d{2}:\d{2}\.\d{3}\])\s+\[(\w+)\]\s+[\w.]+\s+(.*)$'
-        )
-
-        # 依次尝试匹配
-        match = new_pattern.match(line)
+        # 依次尝试匹配（使用類級別預編譯正則，不再每行重新編譯）
+        match = self._RE_LOG_FORMAT_NEW.match(line)
         if not match:
-            match = old_pattern.match(line)
+            match = self._RE_LOG_FORMAT_OLD.match(line)
 
         if match:
             timestamp = match.group(1)   # 如 [01:34:32.678]
@@ -1539,9 +1596,8 @@ class SmartLogReader:
     
     def _extract_progress_info(self, line):
         """从日志行中提取进度信息 - 分開處理配置組進度和任務進度"""
-        # 優先匹配配置組進度
-        config_progress_pattern = re.compile(r'(?:一条龙任务执行|配置组任务执行)[：:]\s*(\d+)/(\d+)')
-        config_match = config_progress_pattern.search(line)
+        # 優先匹配配置組進度（使用類級別預編譯正則）
+        config_match = self._RE_CONFIG_PROGRESS.search(line)
         
         if config_match:
             # 這是配置組進度
@@ -1694,8 +1750,13 @@ class SmartLogReader:
                 return f"{task_type}: {task_name}"
         return None
 
-    def get_content(self):
-        """安全获取日志内容 - 主入口方法（方案一：双循环修复异常归属）"""
+    def get_content(self, skip_delay=False, light=False):
+        """安全获取日志内容 - 主入口方法（方案一：双循环修复异常归属）
+
+        skip_delay=True 时跳过开头的 50ms 等待。
+        light=True 时跳过换行测量（tkinter 字体 measure 极慢），
+        指示灯只需要「日志有没有变」和两个警告标志，不需要排版后的内容。
+        """
         # 如果日志路径无效，返回错误信息
         if not self.log_path_valid:
             return ["⚠️ 日志路径配置错误 ⚠️", "", "无法找到有效的日志文件，请：",
@@ -1703,7 +1764,8 @@ class SmartLogReader:
                     "3. 取消注释并设置正确的路径", "4. 保存配置文件后重启程序", "",
                     "详细说明请查看 README.md", "", "按 Alt+P 关闭程序"]
 
-        time.sleep(0.05)  # 50ms 延迟，确保日志写入完成
+        if not skip_delay:
+            time.sleep(0.05)  # 50ms 延迟，确保日志写入完成
 
         # 检查日期变更和文件更新
         self._detect_date_change()
@@ -1832,6 +1894,10 @@ class SmartLogReader:
         # ---- 格式化显示内容 ----
         display_content = filtered_content[-self.display_lines:] if len(filtered_content) > self.display_lines else filtered_content
 
+        # 輕量模式：指示燈不需要排版內容，直接跳過換行測量
+        if light:
+            return display_content
+
         # 如果启用自动换行，处理换行
         if self.auto_wrap:
             formatted_content = []
@@ -1848,7 +1914,8 @@ class SmartLogReader:
 
         # 更新缓存为格式化后的内容
         if formatted_content:
-            self._last_valid_content = deque(formatted_content, maxlen=100)
+            self._last_valid_content.clear()
+            self._last_valid_content.extend(formatted_content)
 
         return formatted_content
 
@@ -2341,7 +2408,39 @@ class FloatingLogViewer(tk.Tk):
         
         # 窗口隐藏状态
         self.is_hidden = False  # 窗口是否隐藏
-        self.hidden_message = "日志悬浮窗 - 停用中"  # 隐藏时显示的文字
+
+        # ---- 三色指示燈（取代原「停用中」文字） ----
+        def _cfg_int(key, default):
+            """從配置讀整數，容忍字串、空值與壞值"""
+            try:
+                return int(str(config.get(key, default)).strip())
+            except (TypeError, ValueError):
+                return default
+
+        self.led_size = max(4, _cfg_int("led_size", 16))          # 燈泡直徑
+        self.led_gap = max(0, _cfg_int("led_gap", 14))            # 燈泡間距
+        self.led_padding = max(0, _cfg_int("led_padding", 12))    # 四周留白
+        self.led_refresh_interval = max(200, _cfg_int("led_refresh_interval", 1000))
+
+        self.led_on = {
+            "green": config.get("led_green_on_color", "#00FF00"),
+            "yellow": config.get("led_yellow_on_color", "#FFCC00"),
+            "red": config.get("led_red_on_color", "#FF0000"),
+        }
+        self.led_off = {
+            "green": config.get("led_green_off_color", "#004400"),
+            "yellow": config.get("led_yellow_off_color", "#443300"),
+            "red": config.get("led_red_off_color", "#440000"),
+        }
+        self.led_bg_color = config.get("led_bg_color", "#000000")
+
+        self.led_canvas = None            # 在 _setup_ui 裡建立
+        self._led_items = {}              # 名稱 → 畫布座標
+        self._led_state = {}              # 名稱 → 亮/滅
+        self._led_tick_id = None          # after() 句柄
+        self._led_content_hash = None     # 上次看到的日誌指紋
+        self._led_last_change = time.time()  # 上次日誌變動的時間
+        self._path_error = False          # 日誌路徑配置錯誤
 
         # 精簡模式狀態（從配置讀取）
         self.minimal_mode = config.get("minimal_mode", False)  # 精簡模式
@@ -2574,11 +2673,24 @@ class FloatingLogViewer(tk.Tk):
             state='disabled'
         )
         self.text.pack(expand=True, fill='both')
-        
+
+        # 三色指示燈畫布（隱藏時顯示，取代原本的「停用中」文字）
+        self.led_canvas = tk.Canvas(
+            self,
+            bg=self.led_bg_color,
+            highlightthickness=0,
+            borderwidth=0,
+            width=self._led_canvas_width(),
+            height=self._led_canvas_height(),
+        )
+        # 不立即 pack，等 _switch_to_hidden_state 時再放上去
+
         # 仅在非不可选中模式下启用拖动功能
         if not self.click_through:
             self.text.bind("<ButtonPress-1>", self._handle_drag_start)
             self.text.bind("<B1-Motion>", self._handle_drag_move)
+            self.led_canvas.bind("<ButtonPress-1>", self._handle_drag_start)
+            self.led_canvas.bind("<B1-Motion>", self._handle_drag_move)
         else:
             logging.info("不可选中模式已启用，拖动功能已禁用")
         
@@ -2678,70 +2790,148 @@ class FloatingLogViewer(tk.Tk):
         except Exception as e:
             logging.error(f"切换窗口显示/隐藏失败: {str(e)}")
             
+    def _led_canvas_width(self):
+        """指示燈畫布的寬度：三個燈 + 兩個間距 + 兩邊留白"""
+        return self.led_padding * 2 + self.led_size * 3 + self.led_gap * 2
+
+    def _led_canvas_height(self):
+        """指示燈畫布的高度：一顆燈 + 兩邊留白"""
+        return self.led_padding * 2 + self.led_size
+
+    def _draw_leds(self):
+        """在畫布上畫出三個燈位（綠、黃、紅），先全部畫成熄滅狀態"""
+        if self.led_canvas is None:
+            return
+        self.led_canvas.delete("all")
+        self._led_items = {}
+        y0 = self.led_padding
+        y1 = y0 + self.led_size
+        for idx, name in enumerate(("green", "yellow", "red")):
+            x0 = self.led_padding + idx * (self.led_size + self.led_gap)
+            x1 = x0 + self.led_size
+            item = self.led_canvas.create_oval(
+                x0, y0, x1, y1,
+                fill=self.led_off[name],
+                outline="",
+            )
+            self._led_items[name] = item
+            self._led_state[name] = False
+
+    def _set_led(self, name, on):
+        """設定單顆燈的亮滅，狀態沒變就不重畫"""
+        item = self._led_items.get(name)
+        if item is None:
+            return
+        if self._led_state.get(name) == on:
+            return
+        self._led_state[name] = on
+        color = self.led_on[name] if on else self.led_off[name]
+        try:
+            self.led_canvas.itemconfigure(item, fill=color)
+        except Exception as e:
+            logging.debug(f"更新指示燈 {name} 失敗: {str(e)}")
+
+    def _refresh_led_state(self):
+        """依日誌現況算出三顆燈該怎麼亮"""
+        try:
+            content = self.reader.get_content(skip_delay=True, light=True)
+            self._path_error = bool(content and "日志路径配置错误" in content[0])
+        except Exception as e:
+            logging.debug(f"指示燈讀取日誌失敗: {str(e)}")
+            self._path_error = True
+            content = []
+
+        # 內容有變才刷新「最後變動時間」；第一次只建立基準，不刷新
+        try:
+            content_hash = hash(tuple(content))
+        except TypeError:
+            content_hash = hash(str(content))
+        prev_hash = getattr(self, "_led_content_hash", None)
+        if content_hash != prev_hash:
+            self._led_content_hash = content_hash
+            if prev_hash is not None:
+                self._led_last_change = time.time()
+
+        stale = (time.time() - getattr(self, "_led_last_change", time.time())) > STALE_SECONDS
+        exception = bool(getattr(self.reader, "coordinate_exception_warning", False))
+        high_freq = bool(getattr(self.reader, "high_frequency_warning", False))
+
+        # 一分鐘沒變 → 紅燈亮、綠燈關
+        # 連續任務錯誤 → 紅燈綠燈都亮
+        # 任務切換太頻繁 → 黃燈亮
+        self._set_led("green", exception or (not stale and not self._path_error))
+        self._set_led("yellow", high_freq)
+        self._set_led("red", stale or exception or self._path_error)
+
+    def _led_tick(self):
+        """指示燈的定時迴圈（隱藏狀態下取代日誌刷新）"""
+        if not self.is_hidden:
+            self._led_tick_id = None
+            return
+        try:
+            self._refresh_led_state()
+        except Exception as e:
+            logging.error(f"指示燈刷新異常: {str(e)}")
+        self._led_tick_id = self.after(self.led_refresh_interval, self._led_tick)
+
+    def _start_led_tick(self):
+        """啟動指示燈迴圈"""
+        self._stop_led_tick()
+        self._led_last_change = time.time()
+        self._led_content_hash = None
+        self._led_tick()
+
+    def _stop_led_tick(self):
+        """停止指示燈迴圈"""
+        if self._led_tick_id is not None:
+            try:
+                self.after_cancel(self._led_tick_id)
+            except Exception:
+                pass
+            self._led_tick_id = None
+
     def _switch_to_hidden_state(self):
-        """切换到隐藏状态"""
+        """切换到隐藏状态 - 只显示三色指示燈"""
         self.is_hidden = True
-        logging.info("进入隐藏状态 - 日志悬浮窗停用中")
-        
-        # 停止自动刷新（但仍然在后台运行备份功能）
+        logging.info("进入隐藏状态 - 只显示三色指示燈")
+
+        # 停止日志刷新（备份定时器独立运行，不受影响）
         self._stop_auto_refresh()
-        
+
         # 保存当前窗口位置和大小
         self.normal_window_geometry = self.geometry()
-        
+
         # 保存当前窗口样式状态，以便恢复时使用
         self.normal_bg_color = self.text.cget("bg")
         self.normal_fg_color = self.text.cget("fg")
         self.normal_window_alpha = self.attributes('-alpha')
         self.normal_transparentcolor = self.attributes('-transparentcolor')
         self.normal_font_config = self.text.cget("font")  # 保存当前字体配置
-        
-        # 设置隐藏状态样式：黑色背景、红色文字、不透明、固定字体15
-        hidden_bg_color = "#000000"  # 黑色背景
-        hidden_fg_color = "#FF0000"  # 红色文字
-        hidden_font_size = 15  # 固定字体大小15
-        
-        # 获取当前字体名称和粗细
-        font_name = self.config.get("font_name", "Consolas")
-        font_weight = self.config.get("font_weight", "bold")
-        
-        # 设置隐藏状态字体配置
-        if font_weight != "normal":
-            self.hidden_font_config = (font_name, hidden_font_size, font_weight)
-        else:
-            self.hidden_font_config = (font_name, hidden_font_size)
-        
-        # 设置窗口不透明
+
+        # 窗口不透明，避免指示燈跟著變淡
         self.attributes('-alpha', 1.0)
         self.attributes('-transparentcolor', '')
-        
-        # 设置窗口背景色
-        self.configure(bg=hidden_bg_color)
-        
-        # 清空文本显示区域
-        self.text.config(state=tk.NORMAL)
-        self.text.delete(1.0, tk.END)
-        
-        # 设置文本组件样式
-        self.text.config(
-            bg=hidden_bg_color,
-            fg=hidden_fg_color,
-            font=self.hidden_font_config  # 使用固定字体15
-        )
-        
-        # 配置居中标签
-        self.text.tag_configure("center", justify='center')
 
-        # 显示停用信息并居中
-        self.text.insert(tk.END, self.hidden_message, "center")
-        self.text.config(state='disabled')
-        
-        # 调整窗口大小以适应停用信息（使用字体15计算）
+        hidden_bg_color = self.led_bg_color
+        self.configure(bg=hidden_bg_color)
+        self.text.config(bg=hidden_bg_color)
+
+        # 收起文字區，換上指示燈畫布
+        self.text.pack_forget()
+        if self.led_canvas is not None:
+            self.led_canvas.configure(bg=hidden_bg_color)
+            self.led_canvas.pack(expand=True, fill='both')
+            self._draw_leds()
+
+        # 縮小視窗到指示燈大小
         self._adjust_window_for_hidden_state()
-        
+
         # 更新窗口标题
-        self.title("BetterGI日志悬浮窗 - 停用中")
-        
+        self.title("BetterGI日志悬浮窗 - 指示燈")
+
+        # 啟動指示燈迴圈
+        self._start_led_tick()
+
     def _stop_auto_refresh(self):
         """停止自动刷新（但仍然运行备份功能）"""
         self.monitor_running = False
@@ -2751,13 +2941,21 @@ class FloatingLogViewer(tk.Tk):
         """恢复正常显示"""
         self.is_hidden = False
         logging.info("恢复正常显示状态")
-        
-        # 恢复自动刷新
-        self._start_auto_refresh()
-        
+
+        # 停掉指示燈迴圈
+        self._stop_led_tick()
+
+        # 收起指示燈畫布，換回文字區
+        if self.led_canvas is not None:
+            self.led_canvas.pack_forget()
+        self.text.pack(expand=True, fill='both')
+
         # 恢复窗口大小和位置
         if hasattr(self, 'normal_window_geometry'):
             self.geometry(self.normal_window_geometry)
+
+        # 恢复自动刷新
+        self._start_auto_refresh()
             
         # 删除居中标签
         if "center" in self.text.tag_names():
@@ -2808,38 +3006,23 @@ class FloatingLogViewer(tk.Tk):
             del self.normal_transparentcolor
         if hasattr(self, 'normal_font_config'):
             del self.normal_font_config
-        if hasattr(self, 'hidden_font_config'):
-            del self.hidden_font_config
 
     def _adjust_window_for_hidden_state(self):
-        """调整窗口大小以适应隐藏状态（使用字体15计算）"""
+        """调整窗口大小以适应隐藏状态（縮成三個指示燈的大小）"""
         try:
-            # 计算停用信息的宽度（使用固定字体15）
-            font_name = self.config.get("font_name", "Consolas")
-            font_size = 15  # 固定字体大小15
-            
-            # 创建临时字体计算宽度
-            temp_font = tkfont.Font(family=font_name, size=font_size, weight="bold")
-            text_width = temp_font.measure(self.hidden_message)
-            
-            # 加上边距（左右各30像素）
-            window_width = min(text_width + 40, 300)  # 最大不超过400像素
-            
-            # 固定高度为一行的高度加上边距
-            line_height = temp_font.metrics('linespace')
-            window_height = line_height + 20  # 一行高度加边距
-            
             # 保持当前位置
             current_x = self.winfo_x()
             current_y = self.winfo_y()
-            
-            # 设置新的大小
+
+            window_width = self._led_canvas_width()
+            window_height = self._led_canvas_height()
+
             self.geometry(f"{window_width}x{window_height}+{current_x}+{current_y}")
-            
+
         except Exception as e:
             logging.error(f"调整隐藏状态窗口大小失败: {str(e)}")
-            # 使用默认大小（足够显示文字）
-            self.geometry(f"300x50+{self.winfo_x()}+{self.winfo_y()}")
+            # 使用默认大小（三个灯的最小尺寸）
+            self.geometry(f"{self._led_canvas_width()}x{self._led_canvas_height()}+{self.winfo_x()}+{self.winfo_y()}")
 
 
     def _on_transparent_toggle_shortcut(self, event=None):
@@ -3177,12 +3360,11 @@ class FloatingLogViewer(tk.Tk):
         try:
             # 如果窗口是隐藏状态，只进行必要的后台处理但不更新显示
             if self.is_hidden:
-                # 仍然获取日志内容以确保备份功能正常运行
-                # 但不更新显示界面
+                # 隱藏狀態下只需保證日誌文件切換與跨天備份；
+                # 備份定時器獨立運行，不依賴 get_content()
                 try:
-                    # 获取日志内容但不显示
-                    new_content = self.reader.get_content()
-                    # 备份功能会在 reader 内部自动运行
+                    self.reader._detect_date_change()
+                    self.reader._update_log_file()
                 except Exception as e:
                     logging.debug(f"隐藏状态下获取日志内容时出错（正常继续）: {str(e)}")
                 return
@@ -3246,7 +3428,7 @@ class FloatingLogViewer(tk.Tk):
                     text_color = self.stale_color
                 elif self.reader.high_frequency_warning:
                     text_color = self.high_freq_color
-                elif stale_seconds > 60:  # 超过 60 秒无更新显示红色警告
+                elif stale_seconds > STALE_SECONDS:  # 超过 STALE_SECONDS 秒无更新显示红色警告
                     text_color = self.stale_color
                 else:
                     text_color = self.normal_color
