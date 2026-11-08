@@ -3143,6 +3143,10 @@ class FloatingLogViewer(tk.Tk):
 
     def _on_second_style_toggle_shortcut(self, event=None):
         """Alt+K 快捷键处理函数 - 切换第二样式"""
+        # 隱藏狀態（指示燈）下不切換樣式，避免視窗被撐回日誌大小
+        if self.is_hidden:
+            logging.debug("隱藏狀態下忽略 Alt+K")
+            return
         # 切换状态
         self.author_style2_active = not self.author_style2_active
         
